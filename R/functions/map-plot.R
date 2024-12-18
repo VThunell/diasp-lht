@@ -52,10 +52,21 @@ sfc_tr <- st_transform(sfc, utm_zone33)
 # ymax2 <- 6450000
 # yrange <- ymax2 - ymin2
 
-plot_map <- 
+plot_map_Euro <- 
   ggplot(euro_map_proj) + 
   xlim(st_bbox(sfc_tr)$xmin, st_bbox(sfc_tr)$xmax) +
   ylim(st_bbox(sfc_tr)$ymin, st_bbox(sfc_tr)$ymax) +
+  labs(x = "Longitude", y = "Latitude") +
+  geom_sf(size = 0.3, color = "gray80") + 
+  theme_sleek() +
+  guides(colour = guide_colorbar(title.position = "top", title.hjust = 0.5),
+         fill = guide_colorbar(title.position = "top", title.hjust = 0.5)) +
+  NULL
+
+plot_map_Nord <- 
+  ggplot(euro_map_proj) + 
+  xlim(st_bbox(sfc_tr)$xmin+1800000, st_bbox(sfc_tr)$xmax) +
+  ylim(st_bbox(sfc_tr)$ymin+2000000, st_bbox(sfc_tr)$ymax) +
   labs(x = "Longitude", y = "Latitude") +
   geom_sf(size = 0.3, color = "gray80") + 
   theme_sleek() +
