@@ -1,0 +1,463 @@
+---
+title: "check salmon data"
+author: "Viktor Thunell"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+format: 
+  html:
+    page-layout: full
+    embed-resources: true
+knitr: 
+  opts_chunk:
+    fig.align: center
+    out-width: 80%
+editor: source
+execute: 
+  echo: true
+  eval: true
+  cache: true
+---
+
+## Load libraries
+
+```{r libs}
+#| message: false
+#| warning: false
+#| cache: false
+
+# Load libraries, install if needed
+pkgs <- c("tidyverse", "tidylog", "devtools","viridis","nls.multstart", "broom", "patchwork") 
+
+if(length(setdiff(pkgs,rownames(installed.packages()))) > 0){
+  
+    install.packages(setdiff(pkgs, rownames(installed.packages())), dependencies = T)
+  
+  }
+
+invisible(lapply(pkgs, library, character.only = T))
+
+options(ggplot2.continuous.colour = "viridis")
+#theme_set(theme_grey()) # check why global theme option not working when rendering
+
+# Set path
+home <- here::here()
+```
+
+
+## Read data
+
+```{r}
+#| message: false
+#| warning: false
+#| cache: false
+
+# Sötebasen Salmon
+# problems(read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming-data/salmon/LaxindividerSötebasen.txt", locale = locale(encoding="latin1"), delim = "\t")) |>
+#    dplyr::select(col, expected) |>
+#    unique()
+# read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming-data/salmon/LaxindividerSötebasen.txt", locale = locale(encoding="latin1"), delim = "\t")[,c(24,25,33)]
+
+sb_salind <- read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming-data/salmon/LaxindividerSötebasen.txt", locale = locale(encoding="latin1"), delim = "\t", col_types = cols(Märkning2 = col_character(), Märke2Nr = col_character(), ÅlderLek3 = col_character())) %>%
+  rename(age_ad = AdultÅlder,
+         age_sm = SmoltÅlder,
+         length = Längd,
+         weight = Vikt,
+         origin = Ursprung,
+         sex = Kön,
+         stage = Stadium)
+names(sb_salind)
+str(sb_salind)
+
+
+# REMEMBER TO CORRECT THESE THREE Columns if used!!
+
+```
+
+```{r}
+names(sb_salind)
+#unique(sb_salind$Plats)
+unique(sb_salind$VattenNamn)
+sb_salind |>
+  summarise(n = n(), .by = VattenNamn)
+sb_salind |>
+  summarise(nna = n(), .by = Subdiv)
+
+sb_salind |>
+  filter(is.na(origin)) |>
+  summarise(n = n(), .by = c(Märkning))
+
+unique(sb_salind$stage)
+```
+
+## ADULTS
+
+### All adult individuals with a sex, river, age and length
+Non linear least square fits to vbgf curves for adults 
+
+```{r}
+sb_salind_ad <- sb_salind %>%
+  filter(stage == "Adult")
+
+sal_fit <- sb_salind_ad %>%
+  filter(!origin == "Vild",
+         !sex %in% c("iu","o",NA),
+         !VattenNamn %in% c("Västerhavet (hela) ICES SD 20-21", "Östersjön (hela) ICES SD 22-32"),
+         !is.na(age_ad),
+         !is.na(length)) %>%
+  nls_multstart(length ~ Linf*(1-exp(-k*age_ad)), 
+              iter = 500,
+              data = ., 
+              start_lower = c(Linf = 500, k = 0.1), 
+              start_upper = c(Linf = 1500, k = 0.5))
+
+tibble(Age = seq(0.1,6,0.1), 
+       Length = sal_fit %>% predict(newdata = list(age_ad = seq(0.1,6,0.1)))) %>%
+  ggplot() +
+  geom_line(aes(Age, Length)) +
+  geom_point(data = sb_salind_ad %>% filter(!origin == "Vild",
+                                         !sex %in% c("iu","o",NA),
+                                         !VattenNamn %in% c("Västerhavet (hela) ICES SD 20-21", "Östersjön (hela) ICES SD 22-32"),
+                                         !is.na(age_ad),
+                                         !is.na(length)), aes(age_ad, length, color = sex)) +
+  labs(title = "Adults")
+```
+
+
+```{r}
+# # version 1, to get a tidy model object per sex
+# sal_lenage <- sb_salind_ad %>%
+#   filter(origin == "Vild",
+#          !sex %in% c("iu","o",NA),
+#          !VattenNamn %in% c("Västerhavet (hela) ICES SD 20-21", "Östersjön (hela) ICES SD 22-32"),
+#          !is.na(age_ad),
+#          !is.na(length)) %>%
+#   split(f = as.factor(.$sex)) %>% # is this right?
+#   map(\(x) broom::tidy(nls_multstart(length ~ Linf*(1-exp(-k*age_ad)), 
+#               iter = 500,
+#               data = x, 
+#               start_lower = c(Linf = 500, k = 0.1), 
+#               start_upper = c(Linf = 1500, k = 0.5)))) %>% 
+#  list_rbind(names_to = "sex")
+# 
+# # version 2, summarise to get a list per sex in a tibble
+# sal_lenage_2 <- sb_salind_ad %>%
+#   filter(origin == "Vild",
+#          !sex %in% c("iu","o",NA),
+#          !VattenNamn %in% c("Västerhavet (hela) ICES SD 20-21", "Östersjön (hela) ICES SD 22-32"),
+#          !is.na(age_ad),
+#          !is.na(length)) %>%
+#   group_by(sex) %>%
+#   summarise(
+#     model = list(
+#       nls_multstart(length ~ Linf*(1-exp(-k*age_ad)), 
+#               iter = 500,
+#               data = ., 
+#               start_lower = c(Linf = 500, k = 0.1), 
+#               start_upper = c(Linf = 1500, k = 0.5))
+#     )
+# )
+
+# version 3, nest
+fit_vbgf <- function(df) {
+  nls_multstart(length ~ Linf*(1-exp(-k*age_ad)), 
+              iter = 500,
+              data = df, 
+              start_lower = c(Linf = 500, k = 0.1), 
+              start_upper = c(Linf = 1500, k = 0.5))
+}
+
+sal_vbgf_fits <- sb_salind_ad %>%
+  filter(!origin == "Vild",
+         !sex %in% c("iu","o",NA),
+         !VattenNamn %in% c("Västerhavet (hela) ICES SD 20-21", "Östersjön (hela) ICES SD 22-32"),
+         !is.na(age_ad),
+         !is.na(length)) %>%
+  group_by(VattenNamn, sex) %>% 
+  filter(n() > 50)  %>%
+  nest() %>% 
+  mutate(model = map(data, fit_vbgf))
+
+# Estimates by river and sex
+sal_vbgf_fits %>%
+  mutate(ests = map(model, broom::tidy,  conf.int = TRUE)) %>%
+  unnest(ests) %>%
+  pivot_wider(id_cols = c(sex,VattenNamn), names_from = term, values_from = c(estimate, conf.low, conf.high)) %>%
+  ggplot(aes(estimate_k, estimate_Linf, color = sex, label = VattenNamn)) +
+  geom_point() +
+  geom_text(vjust = 0, nudge_y = 10, show.legend = FALSE, color = "black") +
+  coord_cartesian(expand = 2) +
+  labs(title = "Adult VBGF params") +
+  geom_errorbar(aes(ymin = conf.low_Linf, ymax = conf.high_Linf)) +
+  geom_errorbar(aes(xmin = conf.low_k, xmax = conf.high_k))
+```
+
+
+```{r}
+# Predictions by river and sex
+sal_vbgf_fits_preds <- sal_vbgf_fits %>%
+    mutate(preds = map(model, predict, newdata = list(age_ad = seq(0.1,6,0.1))))
+
+sal_vbgf_fits_preds %>%
+  unnest(preds) %>%
+  mutate(Age = seq(0.1,6,0.1)) %>%
+  ggplot(aes(Age, preds, color = VattenNamn, linetype = sex)) +
+  geom_line() +
+  geom_point(data = sb_salind_ad %>% filter(!origin == "Vild",
+                                         !sex %in% c("iu","o",NA),
+                                         !VattenNamn %in% c("Västerhavet (hela) ICES SD 20-21", "Östersjön (hela) ICES SD 22-32"),
+                                         !is.na(age_ad),
+                                         !is.na(length)) %>% 
+               group_by(VattenNamn, sex) %>% 
+               filter(n() > 50)  %>%
+               ungroup(), 
+             aes(age_ad, length)) +
+  labs(title = "Adult VGBF per VattenNamn")
+
+```
+
+### Sex ratio
+
+```{r}
+unique(sb_salind_ad$origin)
+
+sb_salind_ad %>%
+  drop_na(origin,
+          age_ad,
+          length) %>%
+  filter(#!origin == "Vild",
+         !sex %in% c("iu","o",NA),
+         !VattenNamn %in% c("Västerhavet (hela) ICES SD 20-21", "Östersjön (hela) ICES SD 22-32")) %>%
+  count(sex, VattenNamn, origin) %>%
+  mutate(freq = prop.table(n), .by = c(VattenNamn, origin) ) %>%
+  pivot_wider(id_cols = c(VattenNamn,sex), names_from = origin, values_from = freq) %>%
+  filter(sex == "f") %>%
+  rename(farmed = Odlad,
+         wild = Vild) %>%
+  ggplot(aes(farmed, wild, color = VattenNamn, label = VattenNamn)) +
+  geom_point() +
+  labs(title = "Female proportion") + 
+  geom_text(vjust = 0, nudge_y = 0.01, show.legend = FALSE) +
+  coord_cartesian(xlim = c(0.3,1), ylim = c(0.3,1), expand = 2) + 
+  geom_abline(intercept = 0, slope = 1, color = "grey")
+
+```
+
+### Lenght weight and Le Crens relative condition index
+
+Le Cren index is the predicted (from lenght using global lw-relationship) divided by the observed individual weight. 
+
+```{r}
+sal_ab <- sb_salind_ad %>%
+  drop_na(origin,
+          age_ad,
+          length,
+          weight) %>%
+  filter(!sex %in% c("iu","o",NA),
+         !VattenNamn %in% c("Västerhavet (hela) ICES SD 20-21", "Östersjön (hela) ICES SD 22-32")) %>%
+  group_by(sex, origin) |>
+  group_modify( ~ tidy(lm(data = .x, log(weight) ~ log(length)))) %>%
+  pivot_wider(id_cols=c(sex, origin), names_from = term, values_from = estimate ) %>%
+  rename(a = '(Intercept)',
+         b = 'log(length)') %>%
+  mutate(a = exp(a),
+         b = b) %>%
+  ungroup()
+
+# LW
+sb_salind_ad %>%
+  drop_na(origin,
+          age_ad,
+          length,
+          weight) %>%
+  filter(!sex %in% c("iu","o",NA),
+         !VattenNamn %in% c("Västerhavet (hela) ICES SD 20-21", "Östersjön (hela) ICES SD 22-32")) %>%
+  left_join(sal_ab, join_by("sex", "origin")) %>%
+  mutate(est_weight = (a*length^b)) %>%
+  ggplot() +
+  geom_point(aes(length, weight, color = sex), alpha = 0.3, shape = 3) +
+  geom_line(aes(length, est_weight, color = sex, linetype = origin), size = 1) 
+
+# sd of Le Cren by age sex and origin
+sb_salind_ad %>%
+  drop_na(origin,
+          age_ad,
+          length,
+          weight) %>%
+  filter(!sex %in% c("iu","o",NA),
+         !VattenNamn %in% c("Västerhavet (hela) ICES SD 20-21", "Östersjön (hela) ICES SD 22-32")) %>%
+  left_join(sal_ab, join_by("sex", "origin")) %>%
+  mutate(LeCren = (a*length^b)/weight) %>%
+  summarise(sd_LeCren = sd(LeCren), mean_LeCren = mean(LeCren), .by = c(age_ad, sex, VattenNamn, origin)) %>%
+  ggplot(aes(age_ad, mean_LeCren, color = VattenNamn, linetype = sex)) +
+  geom_pointrange(aes(ymin=mean_LeCren-sd_LeCren, ymax=mean_LeCren+sd_LeCren), size = 0.1) +
+  geom_line(linetype = "dashed") +
+  facet_wrap(sex~origin) +
+  labs(title = "Mean and sd of le Cren index per age class, Adults")
+
+sb_salind_ad %>%
+  drop_na(origin,
+          age_ad,
+          length,
+          weight) %>%
+  filter(!sex %in% c("iu","o",NA),
+         !VattenNamn %in% c("Västerhavet (hela) ICES SD 20-21", "Östersjön (hela) ICES SD 22-32")) %>%
+  left_join(sal_ab, join_by("sex", "origin")) %>%
+  mutate(LeCren = (a*length^b)/weight) %>%
+  summarise(mean_LeCren = mean(LeCren), .by = c(VattenNamn, sex, origin)) %>%
+  pivot_wider(id_cols = c(VattenNamn, origin), names_from = sex, values_from = mean_LeCren) %>%
+  rename(female = f,
+         male = m) %>%
+  ggplot(aes(female, male, color = VattenNamn, label = VattenNamn)) +
+  geom_point() +
+  facet_wrap(~origin) +
+  labs(title = "Adult Le Cren condition") + 
+  geom_text(vjust = 0, nudge_y = 0.01, show.legend = FALSE) +
+  coord_cartesian(xlim = c(0.75,1.2), ylim = c(0.75,1.2), expand = 2) + 
+  geom_abline(intercept = 0, slope = 1, color = "grey")
+
+```
+
+
+## SMOLTS (including stirr like smolts)
+
+### All smolts with a sex, river, age and length
+
+Skip sex and origin specific summaries for smolts as info is scarce/incomplete
+
+```{r}
+unique(sb_salind$stage)
+
+sb_salind_sm <- sb_salind %>%
+   filter(!stage %in% c("Adult", "Ingen uppgift", NA,"Lekfisk"))
+
+# lets skip sex and origin specific summaries for smolts:
+sb_salind_sm %>%
+  summarise(n=n(), .by= sex, origin)
+sb_salind_sm %>%
+  summarise(n=n(), .by= origin)
+
+sal_fit <- sb_salind_sm %>%
+  filter(!VattenNamn %in% c("Västerhavet (hela) ICES SD 20-21", "Östersjön (hela) ICES SD 22-32"),
+         !is.na(age_sm),
+         !is.na(length)) %>%
+  nls_multstart(length ~ Linf*(1-exp(-k*age_sm)), 
+              iter = 500,
+              data = ., 
+              start_lower = c(Linf = 500, k = 0.1), 
+              start_upper = c(Linf = 1500, k = 0.5))
+
+tibble(Age = seq(0.1,6,0.1), 
+       Length = sal_fit %>% predict(newdata = list(age_sm = seq(0.1,6,0.1)))) %>%
+  ggplot() +
+  geom_line(aes(Age, Length)) +
+  geom_point(data = sb_salind_sm %>% filter(!VattenNamn %in% c("Västerhavet (hela) ICES SD 20-21", "Östersjön (hela) ICES SD 22-32"),
+                                         !is.na(age_sm),
+                                         !is.na(length)), aes(age_sm, length)) +
+  ylim(0,300)
+```
+### VGBF curves Smolt
+
+```{r}
+
+fit_vbgf <- function(df) {
+  nls_multstart(length ~ Linf*(1-exp(-k*age_sm)), 
+              iter = 500,
+              data = df, 
+              start_lower = c(Linf = 100, k = 0.1), 
+              start_upper = c(Linf = 300, k = 0.9))
+}
+
+sal_vbgf_fits <- sb_salind_sm %>%
+  filter(!VattenNamn %in% c("Västerhavet (hela) ICES SD 20-21", "Östersjön (hela) ICES SD 22-32"),
+         !is.na(age_sm),
+         !is.na(length)) %>%
+  filter(length < 500) %>% # removing an outlier of 900 mm
+  group_by(VattenNamn) %>% 
+  filter(n() > 50)  %>%
+  nest() %>% 
+  mutate(model = map(data, fit_vbgf))
+
+# Estimates by river and sex
+sal_vbgf_fits %>%
+  filter(!VattenNamn == "Råneälven") %>%
+  mutate(ests = map(model, broom::tidy,  conf.int = TRUE)) %>%
+  unnest(ests) %>%
+  pivot_wider(id_cols = c(VattenNamn), names_from = term, values_from = c(estimate, conf.low, conf.high)) %>%
+  ggplot(aes(estimate_k, estimate_Linf, color = VattenNamn, label = VattenNamn)) +
+  geom_point() +
+  geom_text(vjust = 0, nudge_y = 2, show.legend = FALSE, color = "black") +
+  coord_cartesian(expand = 2) +
+  geom_errorbar(aes(ymin = conf.low_Linf, ymax = conf.high_Linf)) +
+  geom_errorbar(aes(xmin = conf.low_k, xmax = conf.high_k)) +
+  labs(title = "Smolt VBGF params")
+
+```
+
+
+```{r}
+# Predictions by river and sex
+sal_vbgf_fits_preds <- sal_vbgf_fits %>%
+  mutate(Length = map(model, predict, newdata = list(age_sm = seq(0.1,6,0.1))))
+
+sal_vbgf_fits_preds %>%
+  filter(!VattenNamn == "Råneälven") %>%
+  unnest(Length) %>%
+  mutate(Age = seq(0.1,6,0.1)) %>%
+  ggplot(aes(Age, Length, color = VattenNamn)) +
+  geom_line() +
+  geom_point(data = sb_salind_sm %>% filter(!VattenNamn %in% c("Västerhavet (hela) ICES SD 20-21", "Östersjön (hela) ICES SD 22-32"),
+                                         !is.na(age_sm),
+                                         !is.na(length),
+                                         length < 500) %>% # removing an outlier of 900 mm 
+               group_by(VattenNamn, sex) %>% 
+               filter(n() > 50)  %>%
+               ungroup(), 
+             aes(age_sm, length)) +
+  labs(title = "Smolt VBGF curves")
+
+```
+
+### Length weight and Le Crens relative condition index
+
+See methods in https://academic.oup.com/icesjms/article/80/5/1539/7186976
+
+```{r}
+sal_ab <- sb_salind_sm %>%
+  drop_na(age_sm,
+          length,
+          weight) %>%
+  filter(!VattenNamn %in% c("Västerhavet (hela) ICES SD 20-21", "Östersjön (hela) ICES SD 22-32"),
+         length < 500, # removing an outlier of 900 mm %>%
+         weight < 1000) %>% # removing wrong weights
+  lm(log(weight) ~ log(length), data = .) %>%
+  tidy()
+
+# LW with and without erroneous data
+sb_salind_sm %>%
+  drop_na(age_sm,
+          length,
+          weight) %>%
+  filter(!VattenNamn %in% c("Västerhavet (hela) ICES SD 20-21", "Östersjön (hela) ICES SD 22-32"),
+         length < 500) %>% # removing an outlier of 900 mm %>%
+  mutate(est_weight = (exp(sal_ab$estimate[1])*length^sal_ab$estimate[2])) %>%
+  ggplot() +
+  geom_point(aes(length, weight, color = VattenNamn), alpha = 0.3, shape = 3) +
+  geom_line(aes(length, est_weight), size = 0.5) +
+  labs(title = "with obviously wrong data") +
+
+sb_salind_sm %>%
+  drop_na(age_sm,
+          length,
+          weight) %>%
+  filter(!VattenNamn %in% c("Västerhavet (hela) ICES SD 20-21", "Östersjön (hela) ICES SD 22-32"),
+         length < 500,
+         weight < 1000) %>% # removing wrong weights
+  mutate(est_weight = (exp(sal_ab$estimate[1])*length^sal_ab$estimate[2])) %>%
+  ggplot() +
+  geom_point(aes(length, weight, color = VattenNamn), alpha = 0.3, shape = 3) +
+  geom_line(aes(length, est_weight), size = 0.5) +
+  labs(title = "without obviously wrong data")
+```
+
+
+
+

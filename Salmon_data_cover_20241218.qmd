@@ -1,0 +1,203 @@
+---
+title: "Salmon data Finland and Sweden"
+author: "Viktor Thunell"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+format: 
+  html:
+    page-layout: full
+    embed-resources: true
+knitr: 
+  opts_chunk:
+    fig.align: center
+    out-width: 80%
+editor: source
+execute: 
+  echo: true
+  eval: true
+  cache: true
+---
+
+## Load libraries
+
+```{r libs}
+#| message: false
+#| warning: false
+#| cache: false
+
+# Load libraries, install if needed
+pkgs <- c("tidyverse", "tidylog", "devtools","viridis","nls.multstart", "broom", "patchwork") 
+
+if(length(setdiff(pkgs,rownames(installed.packages()))) > 0){
+  
+    install.packages(setdiff(pkgs, rownames(installed.packages())), dependencies = T)
+  
+  }
+
+invisible(lapply(pkgs, library, character.only = T))
+
+options(ggplot2.continuous.colour = "viridis")
+theme_set(theme_grey()) # check why global theme option not working when rendering
+
+# Set path
+home <- here::here()
+```
+
+
+## Read data
+
+```{r}
+#| message: false
+#| warning: false
+#| cache: false
+
+# path_collectors <- "/Volumes/restricted$/Sötebasen//Exporter/LaxindividerSötebasen.csv"
+# df <- read.csv2(path_collectors, fileEncoding="Latin1")
+ 
+# Swedish
+swe_sallaa <- read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming-data/salmon/LaxindividerSötebasen.csv", locale = locale(encoding="latin1"), delim = ";", col_types = cols(Märkning2 = col_character(), Märke2Nr = col_character(), ÅlderLek3 = col_character())) %>%
+  rename(age_ad = AdultÅlder,
+         age_sm = SmoltÅlder,
+         length = Längd,
+         weight = Vikt,
+         year = Årtal,
+         origin = Ursprung,
+         sex = Kön,
+         river = VattenNamn,
+         stage = Stadium
+         ) %>%
+  mutate(country = "SWE",
+         origin = case_when(origin == "Odlad" ~ "reared",
+                            origin == "Vild" ~ "wild"))
+)
+# REMEMBER TO CORRECT THESE THREE Columns if used!!
+
+# Finnish
+fin_sallaa <- read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming-data/salmon/Tornionjoki_growth measurements_1970s-.txt", delim = "\t", locale = locale(encoding="latin1", decimal_mark = ",")) %>%
+  rename(age_ad = 'SEA-AGE',
+         age_sm = 'SMOLT AGE',
+         length = LENGTH,
+         weight = WEIGHT,
+         year = YEAR,
+         sex = SEX,
+         river = RIVER
+         ) %>%
+  mutate(country = "FIN",
+         origin = NA)
+
+str(swe_sallaa)
+str(fin_sallaa)
+
+# Fecundity Sweden
+swe_salfec <- read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming-data/salmon/Fekunditetsdata_Dal_Ume_20241213.csv", delim = ";", locale = locale(encoding="latin1")) %>%
+  rename(#age_ad = AdultÅlder,
+         #age_sm = SmoltÅlder,
+         n_eggs = 'No eggs total',
+         length = 'Length (cm)',
+         weight = 'Weight before stripping (kg)',
+         origin = 'Wild/Reared',
+         river = River,
+         ) %>%
+  mutate(country = "SWE",
+         year = as.factor(Year), 
+         weight = weight*1000) %>% # to grams 
+  mutate(river = case_when(river == "Ume\u008alven" ~ "Umeälven",
+                           river == "Dal\u008alven" ~ "Dalälven"))
+
+# Fecundity Finland
+fin_salfec <- read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming-data/salmon/Fecunditydata_Tornionjoki.csv", delim = ";", locale = locale(encoding="latin1")) %>%
+  rename(#age_ad = AdultÅlder,
+         n_eggs = 'Number of eggs',
+         length = 'Lenght, mm',
+         weight = 'Weight, g'
+         ) %>%
+  mutate(country = "FIN",
+         origin = NA,
+         river = "Tornionjoki",
+         year = "97/98",
+         length = if_else(is.na(length), NA, length/10)) # to cm
+
+```
+
+## N obs by river map
+
+```{r}
+
+```
+
+## N obs Length age by year
+
+```{r}
+swe_sallaa %>%
+  drop_na(age_sm,age_sm,length) %>%
+  dplyr::select("river", "country", "origin", "year") %>%
+  bind_rows(fin_sallaa %>% 
+              drop_na(age_sm,age_sm,length) %>%
+              dplyr::select("river","country", "origin", "year") ) %>%
+  summarise(count = n(), .by = c(year, country, origin)) |>
+  ggplot() +
+  geom_bar(aes(year, count, fill = country), alpha = 1, stat="identity", position = "stack") +
+  theme_light() +
+  labs(y = "# individuals", title = "Length at age")
+
+```
+## N obs Length age by river
+
+```{r}
+
+swe_sallaa %>%
+  drop_na(age_sm,age_sm,length) %>%
+  dplyr::select("river", "country", "origin", "year") %>%
+  bind_rows(fin_sallaa %>% 
+              drop_na(age_sm,age_sm,length) %>%
+              dplyr::select("river","country", "origin", "year") ) %>%
+  mutate(level = if_else(n() > 1500, "many ind.", "few ind."), .by = river) %>%
+  summarise(count = n(), .by = c(river, country, origin, level)) %>%
+  mutate(river2 = paste(country,":",river)) %>%
+  ggplot() +
+  geom_bar(aes(river2, count, fill = origin), alpha = 1, stat="identity", position = "stack") +
+  theme_light() +
+  facet_wrap(~level, scales = "free") +
+  labs(title = "Length at age", y = "# individuals") +
+  guides(x = guide_axis(angle = 90))
+
+```
+
+## N obs Fecundity by year
+
+```{r}
+
+swe_salfec %>%
+  filter(!is.na(weight),
+         !is.na(length)) %>%
+  dplyr::select("river", "country", "origin", "year") %>%
+  bind_rows(fin_salfec %>% 
+              filter(!is.na(weight),
+                      !is.na(length)) %>%
+              dplyr::select("river","country", "origin", "year") ) %>%
+  summarise(count = n(), .by = c(year, country, origin)) |>
+  ggplot() +
+  geom_bar(aes(year, count, fill = country), alpha = 1, stat="identity", position = "stack") +
+  theme_light() +
+  labs(y = "# individuals", title = "Fecundity")
+
+```
+
+## N obs Fecundity by river
+
+```{r}
+
+swe_salfec %>%
+  filter(!is.na(weight),
+         !is.na(length)) %>%
+  dplyr::select("river", "country", "origin", "year") %>%
+  bind_rows(fin_salfec %>% 
+              filter(!is.na(weight),
+                      !is.na(length)) %>%
+              dplyr::select("river","country", "origin", "year") ) %>%
+  summarise(count = n(), .by = c(river, country, origin)) %>%
+  ggplot() +
+  geom_bar(aes(river, count, fill = origin), alpha = 1, stat="identity", position = "stack") +
+  theme_light() +
+  labs(title = "Fecundity", y = "# individuals")
+
+```
