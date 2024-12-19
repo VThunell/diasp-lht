@@ -66,7 +66,7 @@ plot_map_Euro <-
 plot_map_Nord <- 
   ggplot(euro_map_proj) + 
   xlim(st_bbox(sfc_tr)$xmin+1800000, st_bbox(sfc_tr)$xmax) +
-  ylim(st_bbox(sfc_tr)$ymin+2000000, st_bbox(sfc_tr)$ymax)-100000 +
+  ylim(st_bbox(sfc_tr)$ymin+2000000, st_bbox(sfc_tr)$ymax-200000) +
   labs(x = "Longitude", y = "Latitude") +
   geom_sf(size = 0.3, color = "gray80") + 
   theme_sleek() +
