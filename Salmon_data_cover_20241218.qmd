@@ -12,7 +12,7 @@ knitr:
     out-width: 80%
 editor: source
 execute: 
-  echo: true
+  echo: false
   eval: true
   cache: true
 ---
@@ -25,7 +25,7 @@ execute:
 #| cache: false
 
 # Load libraries, install if needed
-pkgs <- c("tidyverse", "tidylog", "devtools","viridis","nls.multstart", "broom", "patchwork") 
+pkgs <- c("tidyverse", "tidylog", "devtools","viridis","nls.multstart", "broom", "patchwork", "sdmTMB") 
 
 if(length(setdiff(pkgs,rownames(installed.packages()))) > 0){
   
@@ -37,9 +37,13 @@ invisible(lapply(pkgs, library, character.only = T))
 
 options(ggplot2.continuous.colour = "viridis")
 theme_set(theme_grey()) # check why global theme option not working when rendering
+devtools::source_url("https://raw.githubusercontent.com/VThunell/diasp-lht/main/R/functions/map-plot.R")
 
 # Set path
 home <- here::here()
+
+# To ssh://github.com/VThunell/cod-rpw.git
+# git remote set-url origin git@github.com:VThunell/diasp-lht.git
 ```
 
 
@@ -67,8 +71,9 @@ swe_sallaa <- read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Inc
          ) %>%
   mutate(country = "SWE",
          origin = case_when(origin == "Odlad" ~ "reared",
-                            origin == "Vild" ~ "wild"))
-)
+                            origin == "Vild" ~ "wild",
+                            .default = origin))
+
 # REMEMBER TO CORRECT THESE THREE Columns if used!!
 
 # Finnish
@@ -101,7 +106,8 @@ swe_salfec <- read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Inc
          year = as.factor(Year), 
          weight = weight*1000) %>% # to grams 
   mutate(river = case_when(river == "Ume\u008alven" ~ "Umeälven",
-                           river == "Dal\u008alven" ~ "Dalälven"))
+                           river == "Dal\u008alven" ~ "Dalälven",
+                           .default = river))
 
 # Fecundity Finland
 fin_salfec <- read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming-data/salmon/Fecunditydata_Tornionjoki.csv", delim = ";", locale = locale(encoding="latin1")) %>%
@@ -116,17 +122,65 @@ fin_salfec <- read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Inc
          year = "97/98",
          length = if_else(is.na(length), NA, length/10)) # to cm
 
+str(swe_salfec)
+str(fin_salfec)
+
 ```
 
 ## N obs by river map
 
 ```{r}
 
+# swe_sallaa %>%
+#     dplyr::select("RT90_X_Vatten","RT90_Y_Vatten","S99TM_N_Vatten", "S99TM_E_Vatten", "WGS84_N_Vatten", "WGS84_E_Vatten", "RT90_X_Plats", "RT90_Y_Plats", "S99TM_N_Plats","S99TM_E_Plats","WGS84_N_Plats") %>%
+#   distinct()
+#   names(swe_sallaa)
+# Transform our map into UTM 33 coordinates, which is the equal-area projection we fit in:
+# utm_zone33 <- 32633
+# euro_map_proj <- sf::st_transform(euro_map, crs = utm_zone33)
+
+plot_map_Nord +
+  geom_point(data = swe_sallaa %>%
+               drop_na(WGS84_E_Vatten, WGS84_N_Vatten) %>% 
+               add_utm_columns(ll_names = c("WGS84_E_Vatten", "WGS84_N_Vatten"), utm_crs = 32633),
+             aes(X*1000, Y*1000), size = 0.5, color = "deeppink3") +
+  geom_text(data = swe_sallaa %>%
+              drop_na(WGS84_E_Vatten, WGS84_N_Vatten) %>%
+              add_utm_columns(ll_names = c("WGS84_E_Vatten", "WGS84_N_Vatten"), utm_crs = 32633) %>% 
+              mutate(n=n(), .by = c(WGS84_E_Vatten, WGS84_N_Vatten)), 
+            aes(X*1000, Y*1000, label = n),hjust=0, vjust=0, size = 2) +
+  theme_sleek(base_size = 6)
+  
 ```
+### Figure. Length at age: Number of individuals in the Swedish data by river (not catch place). The Finnish data is only from Torne River (which borders Sweden to the east).
+
+
+## Table Finnish and Swedish Length at age data, with and without removing NAs
+```{r}
+#| echo: true
+
+swe_sallaa %>%
+  drop_na(age_sm,age_sm,length) %>%
+  dplyr::select("river", "country", "origin", "year") %>%
+  bind_rows(fin_sallaa %>% 
+              drop_na(age_sm,age_sm,length) %>%
+              dplyr::select("river","country", "origin", "year") ) %>%
+  summarise(count = n(), .by = c(country, origin))
+
+swe_sallaa %>%
+  dplyr::select("river", "country", "origin", "year") %>%
+  bind_rows(fin_sallaa %>% 
+              drop_na(age_sm,age_sm,length) %>%
+              dplyr::select("river","country", "origin", "year") ) %>%
+  summarise(count = n(), .by = c(country, origin))
+
+```
+### 79% of observations removed bcause of NA in mainly age but a few length 
 
 ## N obs Length age by year
 
 ```{r}
+
 swe_sallaa %>%
   drop_na(age_sm,age_sm,length) %>%
   dplyr::select("river", "country", "origin", "year") %>%
@@ -136,10 +190,11 @@ swe_sallaa %>%
   summarise(count = n(), .by = c(year, country, origin)) |>
   ggplot() +
   geom_bar(aes(year, count, fill = country), alpha = 1, stat="identity", position = "stack") +
-  theme_light() +
+  theme_minimal() +
   labs(y = "# individuals", title = "Length at age")
 
 ```
+
 ## N obs Length age by river
 
 ```{r}
@@ -155,29 +210,44 @@ swe_sallaa %>%
   mutate(river2 = paste(country,":",river)) %>%
   ggplot() +
   geom_bar(aes(river2, count, fill = origin), alpha = 1, stat="identity", position = "stack") +
-  theme_light() +
+  theme_minimal() +
   facet_wrap(~level, scales = "free") +
   labs(title = "Length at age", y = "# individuals") +
   guides(x = guide_axis(angle = 90))
 
 ```
 
+## Table Finnish and Swedish Fecundity data
+```{r}
+#| echo: true
+
+swe_salfec %>%
+  drop_na(weight,length) %>%
+  dplyr::select("river", "country", "origin", "year") %>%
+  bind_rows(fin_salfec %>% 
+              drop_na(weight,length) %>%
+              dplyr::select("river","country", "origin", "year") ) %>%
+  summarise(count = n(), .by = c(country, origin))
+
+
+```
+### (few Finnish NAs)
+
+
 ## N obs Fecundity by year
 
 ```{r}
 
 swe_salfec %>%
-  filter(!is.na(weight),
-         !is.na(length)) %>%
+  drop_na(weight,length) %>%
   dplyr::select("river", "country", "origin", "year") %>%
   bind_rows(fin_salfec %>% 
-              filter(!is.na(weight),
-                      !is.na(length)) %>%
+              drop_na(weight,length) %>%
               dplyr::select("river","country", "origin", "year") ) %>%
   summarise(count = n(), .by = c(year, country, origin)) |>
   ggplot() +
   geom_bar(aes(year, count, fill = country), alpha = 1, stat="identity", position = "stack") +
-  theme_light() +
+  theme_minimal() +
   labs(y = "# individuals", title = "Fecundity")
 
 ```
@@ -187,12 +257,10 @@ swe_salfec %>%
 ```{r}
 
 swe_salfec %>%
-  filter(!is.na(weight),
-         !is.na(length)) %>%
+  drop_na(weight,length) %>%
   dplyr::select("river", "country", "origin", "year") %>%
   bind_rows(fin_salfec %>% 
-              filter(!is.na(weight),
-                      !is.na(length)) %>%
+              drop_na(weight,length) %>%
               dplyr::select("river","country", "origin", "year") ) %>%
   summarise(count = n(), .by = c(river, country, origin)) %>%
   ggplot() +
