@@ -57,8 +57,8 @@ home <- here::here()
 # path_collectors <- "/Volumes/restricted$/Sötebasen//Exporter/LaxindividerSötebasen.csv"
 # df <- read.csv2(path_collectors, fileEncoding="Latin1")
  
-# Swedish
-swe_sallaa <- read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming-data/salmon/LaxindividerSötebasen.csv", locale = locale(encoding="latin1"), delim = ";", col_types = cols(Märkning2 = col_character(), Märke2Nr = col_character(), ÅlderLek3 = col_character())) %>%
+# Swedish length at age
+swe_sallaa <- read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming data/salmon/LaxindividerSötebasen.csv", locale = locale(encoding="latin1"), delim = ";", col_types = cols(Märkning2 = col_character(), Märke2Nr = col_character(), ÅlderLek3 = col_character())) %>%
   rename(age_ad = AdultÅlder,
          age_sm = SmoltÅlder,
          length = Längd,
@@ -76,8 +76,8 @@ swe_sallaa <- read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Inc
 
 # REMEMBER TO CORRECT THESE THREE Columns if used!!
 
-# Finnish
-fin_sallaa <- read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming-data/salmon/Tornionjoki_growth measurements_1970s-.txt", delim = "\t", locale = locale(encoding="latin1", decimal_mark = ",")) %>%
+# Finnish length at age
+fin_sallaa <- read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming data/salmon/Tornionjoki_growth measurements_1970s-.txt", delim = "\t", locale = locale(encoding="latin1", decimal_mark = ",")) %>%
   rename(age_ad = 'SEA-AGE',
          age_sm = 'SMOLT AGE',
          length = LENGTH,
@@ -93,7 +93,7 @@ str(swe_sallaa)
 str(fin_sallaa)
 
 # Fecundity Sweden
-swe_salfec <- read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming-data/salmon/Fekunditetsdata_Dal_Ume_20241213.csv", delim = ";", locale = locale(encoding="latin1")) %>%
+swe_salfec <- read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming data/salmon/Fekunditetsdata_Dal_Ume_20241213.csv", delim = ";", locale = locale(encoding="latin1")) %>%
   rename(#age_ad = AdultÅlder,
          #age_sm = SmoltÅlder,
          n_eggs = 'No eggs total',
@@ -110,10 +110,11 @@ swe_salfec <- read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Inc
                            .default = river))
 
 # Fecundity Finland
-fin_salfec <- read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming-data/salmon/Fecunditydata_Tornionjoki.csv", delim = ";", locale = locale(encoding="latin1")) %>%
+fin_salfec <- read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming data/salmon/Fecunditydata_Tornionjoki.csv", delim = ";", locale = locale(encoding="latin1")) %>%
   rename(#age_ad = AdultÅlder,
          n_eggs = 'Number of eggs',
          length = 'Lenght, mm',
+         age_sea = 'Sea-age',
          weight = 'Weight, g'
          ) %>%
   mutate(country = "FIN",
@@ -127,9 +128,62 @@ str(fin_salfec)
 
 ```
 
+# Length at age 
+
+## Table Finnish and Swedish Length at age data, with and without removing NAs
+```{r}
+#| echo: true
+
+# swe_sallaa %>%
+#   drop_na(age_ad,
+#           length) %>%
+#   filter(is.na(origin)) %>%
+#   distinct(river)
+
+swe_sallaa %>%
+  drop_na(length) %>%
+  filter(Åldersprov == "Ja") %>%
+  dplyr::select("river", "country", "origin", "year") %>%
+  bind_rows(fin_sallaa %>% 
+              drop_na(age_sm,age_sm,length) %>%
+              dplyr::select("river","country", "origin", "year") ) %>%
+  summarise(count = n(), .by = c(country, origin))
+
+swe_sallaa %>%
+  dplyr::select("river", "country", "origin", "year") %>%
+  bind_rows(fin_sallaa %>% 
+              drop_na(age_sm,age_sm,length) %>%
+              dplyr::select("river","country", "origin", "year") ) %>%
+  summarise(count = n(), .by = c(country, origin))
+
+```
+### 62% of observations removed because of NA in mainly age abur also some length. All Finnish individuals are from Torne river which is not regulated, i.e the fish should mostly be wild (ask Atso). Both adult and smolt age not always present in Swedish data. 
+
+## N obs Length age by year
+
+```{r}
+
+swe_sallaa %>%
+  drop_na(length) %>%
+  filter(Åldersprov == "Ja") %>%
+  dplyr::select("river", "country", "origin", "year") %>%
+  bind_rows(fin_sallaa %>% 
+              drop_na(length) %>%
+              filter(!is.na(age_sm) & !is.na(age_ad)) %>%
+              dplyr::select("river","country", "origin", "year") ) %>%
+  summarise(count = n(), .by = c(year, country, origin)) |>
+  ggplot() +
+  geom_bar(aes(year, count, fill = country), alpha = 1, stat="identity", position = "stack") +
+  theme_minimal() +
+  labs(y = "# individuals", title = "Length at age")
+
+```
+### Figure. N obs Length age by year
+
 ## N obs by river map
 
 ```{r}
+#| out-width: 200%
 
 # swe_sallaa %>%
 #     dplyr::select("RT90_X_Vatten","RT90_Y_Vatten","S99TM_N_Vatten", "S99TM_E_Vatten", "WGS84_N_Vatten", "WGS84_E_Vatten", "RT90_X_Plats", "RT90_Y_Plats", "S99TM_N_Plats","S99TM_E_Plats","WGS84_N_Plats") %>%
@@ -138,6 +192,10 @@ str(fin_salfec)
 # Transform our map into UTM 33 coordinates, which is the equal-area projection we fit in:
 # utm_zone33 <- 32633
 # euro_map_proj <- sf::st_transform(euro_map, crs = utm_zone33)
+
+# swe_sallaa %>%
+#   filter(river %in% c("Västerhavet (hela) ICES SD 20-21", "Östersjön (hela) ICES SD 22-32")) %>%
+#   distinct(Plats)
 
 plot_map_Nord +
   geom_point(data = swe_sallaa %>%
@@ -155,55 +213,17 @@ plot_map_Nord +
 ### Figure. Length at age: Number of individuals in the Swedish data by river (not catch place). The Finnish data is only from Torne River (which borders Sweden to the east).
 
 
-## Table Finnish and Swedish Length at age data, with and without removing NAs
-```{r}
-#| echo: true
-
-swe_sallaa %>%
-  drop_na(age_sm,age_sm,length) %>%
-  dplyr::select("river", "country", "origin", "year") %>%
-  bind_rows(fin_sallaa %>% 
-              drop_na(age_sm,age_sm,length) %>%
-              dplyr::select("river","country", "origin", "year") ) %>%
-  summarise(count = n(), .by = c(country, origin))
-
-swe_sallaa %>%
-  dplyr::select("river", "country", "origin", "year") %>%
-  bind_rows(fin_sallaa %>% 
-              drop_na(age_sm,age_sm,length) %>%
-              dplyr::select("river","country", "origin", "year") ) %>%
-  summarise(count = n(), .by = c(country, origin))
-
-```
-### 79% of observations removed bcause of NA in mainly age but a few length 
-
-## N obs Length age by year
-
-```{r}
-
-swe_sallaa %>%
-  drop_na(age_sm,age_sm,length) %>%
-  dplyr::select("river", "country", "origin", "year") %>%
-  bind_rows(fin_sallaa %>% 
-              drop_na(age_sm,age_sm,length) %>%
-              dplyr::select("river","country", "origin", "year") ) %>%
-  summarise(count = n(), .by = c(year, country, origin)) |>
-  ggplot() +
-  geom_bar(aes(year, count, fill = country), alpha = 1, stat="identity", position = "stack") +
-  theme_minimal() +
-  labs(y = "# individuals", title = "Length at age")
-
-```
-
 ## N obs Length age by river
 
 ```{r}
 
 swe_sallaa %>%
-  drop_na(age_sm,age_sm,length) %>%
+  drop_na(length) %>%
+  filter(Åldersprov == "Ja") %>%
   dplyr::select("river", "country", "origin", "year") %>%
   bind_rows(fin_sallaa %>% 
-              drop_na(age_sm,age_sm,length) %>%
+              drop_na(length) %>%
+              filter(!is.na(age_sm) & !is.na(age_ad)) %>%
               dplyr::select("river","country", "origin", "year") ) %>%
   mutate(level = if_else(n() > 1500, "many ind.", "few ind."), .by = river) %>%
   summarise(count = n(), .by = c(river, country, origin, level)) %>%
@@ -216,6 +236,7 @@ swe_sallaa %>%
   guides(x = guide_axis(angle = 90))
 
 ```
+### Figure. N obs Length age by year. Split into groups of many and few individuals sampled. A small set of rivers dominate observations (but these are spread across Sweden). Östersjön (hela) och Västerhavet (hela) are at sea but all have a more detailed catch place which we can get coordinates for. 
 
 ## Table Finnish and Swedish Fecundity data
 ```{r}
@@ -231,7 +252,7 @@ swe_salfec %>%
 
 
 ```
-### (few Finnish NAs)
+### (few Finnish weight and length NAs). Mostly reared (opposite of length at age). 
 
 
 ## N obs Fecundity by year
@@ -251,6 +272,7 @@ swe_salfec %>%
   labs(y = "# individuals", title = "Fecundity")
 
 ```
+### Figure. N obs Fecundity by length by year
 
 ## N obs Fecundity by river
 
@@ -267,5 +289,20 @@ swe_salfec %>%
   geom_bar(aes(river, count, fill = origin), alpha = 1, stat="identity", position = "stack") +
   theme_light() +
   labs(title = "Fecundity", y = "# individuals")
+
+```
+### Figure. N obs Fecundity by length by year. Fecundity measures mostly from rivers with compensatory rearing. 
+
+### Finnish fecundity data also have age!
+
+
+## True fecundity in Swedish data. Mean and sd of percent loss (%still in body cavity after stripping the roe, measured through dissection)
+
+```{r}
+
+swe_salfec %>%
+  drop_na(weight,length) %>%
+  rename(perc_loss = 'Perc. loss per ind.') %>%
+  summarise(mean_truefec = mean(perc_loss, na.rm = TRUE), sd_truefec = sd(perc_loss, na.rm = TRUE))
 
 ```

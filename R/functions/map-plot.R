@@ -70,8 +70,8 @@ plot_map_Nord <-
   labs(x = "Longitude", y = "Latitude") +
   geom_sf(size = 0.3, color = "gray80") + 
   theme_sleek() +
-  guides(colour = guide_legend(title.position = "top", title.hjust = 0.5),
-         fill = guide_legend(title.position = "top", title.hjust = 0.5)) +
+  guides(colour = guide_colorbar(title.position = "top", title.hjust = 0.5),
+         fill = guide_colorbar(title.position = "top", title.hjust = 0.5)) +
   NULL
 
 # consider including lakes and rivers 

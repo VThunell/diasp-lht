@@ -1,0 +1,216 @@
+---
+title: "Summary of DCF diadroumus species data for DIASPARA WP 2.1"
+author: "Viktor Thunell"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+format: 
+  html:
+    code-fold: true
+    code-summary: "Show code"
+    page-layout: full
+    embed-resources: true
+knitr: 
+  opts_chunk:
+    fig.align: center
+    out-width: 80%
+editor: source
+execute: 
+  echo: true
+  eval: true
+  cache: true
+---
+
+Summaries of DCF data are available 
+
+## Load libraries
+
+```{r libs}
+#| message: false
+#| cache: false
+
+# Load libraries, install if needed
+pkgs <- c("tidyverse", "tidylog", "devtools","viridis", "patchwork", "rvest", "readxl","httr") 
+
+if(length(setdiff(pkgs,rownames(installed.packages()))) > 0){
+  
+    install.packages(setdiff(pkgs, rownames(installed.packages())), dependencies = T)
+  
+  }
+
+invisible(lapply(pkgs, library, character.only = T))
+
+options(ggplot2.continuous.colour = "viridis")
+theme_set(theme_grey()) # check why global theme option not working when rendering
+devtools::source_url("https://raw.githubusercontent.com/VThunell/diasp-lht/main/R/functions/map-plot.R")
+
+# Set path
+home <- here::here()
+```
+
+## Download files from DCF annual reports
+
+https://dcf.ec.europa.eu/wps-and-ars/annual-reports_en
+
+Using
+https://rvest.tidyverse.org/articles/rvest.html
+https://webscraping-tures.github.io/files.html#downloading-files
+
+```{r}
+# Reading the HTML page with read_html():
+
+# DCF_Ann_Reps <- read_html("https://dcf.ec.europa.eu/wps-and-ars/annual-reports_en")
+# 
+# DCF_Ann_Reps_links <- DCF_Ann_Reps %>%
+#   html_nodes("a") %>% #https://rvest.tidyverse.org/articles/rvest.html
+#   html_attr(name="href") %>%
+#   as_tibble() %>%
+#   filter(str_detect(value, '_tables')) %>%
+#   #filter(str_detect(value, '_tables|_text')) %>% # the link names in the html are not correctly separeted between table and text so I must dowload both and filter out pdfs from xls:s later
+#   pull(value)
+# 
+# #To get content type from link
+# #GET(DCF_Ann_Reps_links[1])
+# 
+# f_download_DCF <- function(link)  {
+#   
+#   download.file(link, destfile = paste0("/Users/vitl0001/Documents/Projects/DIASPARA/Incoming other files/DCF Annual Reports/", basename(link),".xlsx"))
+#   
+#   }
+# 
+# possdnld = possibly(.f = f_download_DCF, otherwise = NULL) #try download and store file otherwise return NULL
+# 
+# map(DCF_Ann_Reps_links, ~possdnld(.x) ) %>%
+#   map(\(x) f_download_DCF)
+
+# DCF_Ann_Reps_links %>%
+#   map(\(x) download.file(x, destfile = paste0("/Users/vitl0001/Documents/Projects/DIASPARA/Incoming other files/DCF Annual Reports/", str_replace_all(x, regex("\\W+"), "_"),
+                           #                    ".xlsx")))
+```
+
+## Import and combine data from tables and summarise not imorted reports 
+
+The not imported files are either not tables (pdfs) or table 2.2 does not exist. The format chnaged between 2021 and 2022, the corresponding sheet is "Table1C Sampling intensity" for years pre 2022.
+
+### Import Table 2.2. Biol variables, i.e. post 2022
+```{r}
+#| output: false
+
+path <- paste0("/Users/vitl0001/Documents/Projects/DIASPARA/Incoming other files/DCF Annual Reports/")
+filepaths <- list.files(path, full.names=TRUE)
+#filepaths <- filepaths[!grepl("^~\\$", filepaths)] # FIX REGEX?? ensure any temporrary files are excluded
+
+# 100 files downloaded out of 103 links
+# length(filepaths) 
+# length(DCF_Ann_Reps_links)
+
+f_DCF_bind22 <- function(file)  {
+  
+  sheetnum = which(str_detect(excel_sheets(file),"2.2"))
+  
+  read_excel(file, sheet = sheetnum, skip = 1) %>%
+    filter(Species %in% c("Salmo salar", "Anguilla anguilla", "Salmo trutta"))
+  
+  }
+
+possxls22 = possibly(.f = f_DCF_bind22, otherwise = NULL) # NULL if table 2.2. doesnt exist
+
+DCF_tables_22 = map(filepaths, ~possxls22(.x) ) %>%
+  setNames(basename(filepaths))
+
+diadrom_DCF_22 <- DCF_tables_22 %>%
+  keep(~!is.null(.x) ) %>%
+  keep(~nrow(.x) > 0) %>%
+  map(~mutate_if(.x, is.numeric, as.character)) %>% # make all numeric as types  differ between the sheets
+  list_rbind()
+
+```
+### Import "Table1C Sampling intensity" for years pre 2022.
+
+```{r}
+#| warning: true
+#| output: false
+
+f_DCF_bind1C <- function(file)  {
+  
+  sheetnum = which(str_detect(excel_sheets(file),"1C"))
+  
+  read_excel(file, sheet = sheetnum, skip = 3) %>%
+    filter(Species %in% c("Salmo salar", "Anguilla anguilla", "Salmo trutta"))
+  
+  }
+
+possxls_1C = possibly(.f = f_DCF_bind1C, otherwise = NULL) # NULL if table 2.2. doesnt exist
+DCF_tables_1C = map(filepaths, ~possxls_1C(.x) ) %>%
+  setNames(basename(filepaths))
+
+diadrom_DCF_1C <- DCF_tables_1C %>%
+  keep(~!is.null(.x) ) %>%
+  keep(~nrow(.x) > 0) %>%
+  map(~mutate_if(.x, is.numeric, as.character)) %>% # make all numeric as types  differ between the sheets
+  list_rbind()
+
+
+```
+# Plot
+
+```{r}
+
+unique(diadrom_DCF_22$`Biological variable`)
+unique(diadrom_DCF_1C$Variables)
+
+diadrom_DCF_22 %>%
+  rename(ach_n_ind = `Achieved number of individuals measured at national level`,
+         biol_var = `Biological variable`,
+         country = MS,
+         year =`Implementation year`) %>%
+  bind_rows(diadrom_DCF_1C %>%
+              rename(ach_n_ind = `Achieved number of individuals measured at the national level`,
+                     biol_var = `Variables`,
+                     country = MS,
+                     year =`Sampling year`) %>%
+              mutate(biol_var = case_when(biol_var %in% c("Age","age") ~ "Age",
+                                          biol_var %in% c("Length","length","lenght") ~ "Length",
+                                          biol_var %in% c("Weight","weight") ~ "Weight",
+                                          biol_var %in% c("Sex ratio","sex ratio") ~ "Sex ratio",
+                                          biol_var %in% c("Sexual maturity","sexual maturity","maturity","Maturity") ~ "Maturity",
+                                          biol_var %in% c("Sex","sex") ~ "Sex",
+                                          biol_var == "NA" ~ NA,
+                                          .default = biol_var))) %>%
+  mutate(ach_n_ind = as.numeric(if_else(ach_n_ind == "NA", NA, ach_n_ind)),
+         biol_var = as.factor(biol_var)) %>%
+  drop_na(biol_var) %>%
+  filter(ach_n_ind < 2000) %>%
+  ggplot() +
+  geom_tile(aes(year, country, fill = ach_n_ind)) +
+  facet_grid(Species ~ biol_var) +
+  scale_fill_viridis() +
+  theme(axis.text.x = element_text(angle = 90),
+        axis.text = element_text(size=6))
+
+
+  
+```
+```{r}
+no_import1C <- DCF_tables_1C %>% # Where theres no table 1C. 
+  keep(~is.null(.x) ) %>%
+  names()
+no_import22 <- DCF_tables_22 %>% # Where theres no table 2.2. 
+  keep(~is.null(.x) ) %>%
+  names()
+
+# the NULL files whwre there is no table 2.2 or 1C. I guess countries that dont have fish managed through the CFP
+basename(no_import22[which(no_import22 %in% no_import1C)])
+```
+
+## Next Table 2.3
+
+What about https://dcf.ec.europa.eu/guidelines_en ...
+
+Requesting DCF data
+
+The data collected under the DCF can be used for scientific purposes by various end users. To obtain the data, you should fill in a data request template (.docx) and send it to MARE-DATACOLLECTIONFRAMEWORK[at]ec[dot]europa[dot]eu.
+
+```{r}
+
+```
+
+

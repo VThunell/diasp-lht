@@ -51,12 +51,12 @@ home <- here::here()
 #| cache: false
 
 # Sötebasen Salmon
-# problems(read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming-data/salmon/LaxindividerSötebasen.txt", locale = locale(encoding="latin1"), delim = "\t")) |>
+# problems(read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming-data/salmon/LaxindividerSötebasen.csv", locale = locale(encoding="latin1"), delim = "\t")) |>
 #    dplyr::select(col, expected) |>
 #    unique()
 # read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming-data/salmon/LaxindividerSötebasen.txt", locale = locale(encoding="latin1"), delim = "\t")[,c(24,25,33)]
 
-sb_salind <- read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming-data/salmon/LaxindividerSötebasen.txt", locale = locale(encoding="latin1"), delim = "\t", col_types = cols(Märkning2 = col_character(), Märke2Nr = col_character(), ÅlderLek3 = col_character())) %>%
+sb_salind <- read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming-data/salmon/LaxindividerSötebasen.csv", locale = locale(encoding="latin1"), delim = ";", col_types = cols(Märkning2 = col_character(), Märke2Nr = col_character(), ÅlderLek3 = col_character())) %>%
   rename(age_ad = AdultÅlder,
          age_sm = SmoltÅlder,
          length = Längd,

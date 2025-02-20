@@ -1,0 +1,866 @@
+---
+title: "Sex ratio model v1" 
+author: "Viktor Thunell" 
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+format: 
+  html:
+    page-layout: full
+    embed-resources: true
+knitr: 
+  opts_chunk:
+    fig.align: center
+    out-width: 80%
+editor: source
+execute: 
+  echo: false
+  eval: true
+  cache: true
+---
+
+## Load libraries
+```{r libs}
+#| message: false
+#| warning: false
+#| cache: false
+
+# Load libraries, install if needed
+pkgs <- c("tidyverse", "tidylog", "devtools","viridis","nls.multstart", "broom", "patchwork", "rjags", "coda", "boot", "tidybayes","bayesplot")
+
+if(length(setdiff(pkgs,rownames(installed.packages()))) > 0){
+    install.packages(setdiff(pkgs, rownames(installed.packages())), dependencies = T)
+  }
+
+invisible(lapply(pkgs, library, character.only = T))
+
+options(ggplot2.continuous.colour = "viridis")
+theme_set(theme_light()) # check why global theme option not working when rendering
+# Set path
+
+home <- here::here()
+```
+
+## Read data
+```{r}
+#| message: false
+#| warning: false
+#| cache: false
+
+# Sötebasen Salmon
+# problems(read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming-data/salmon/LaxindividerSötebasen.txt", locale = locale(encoding="latin1"), delim = "\t")) |>
+#    dplyr::select(col, expected) |>
+#    unique()
+# read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming-data/salmon/LaxindividerSötebasen.txt", locale = locale(encoding="latin1"), delim = "\t")[,c(24,25,33)]
+
+swe_sallaa <- read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming data/salmon/LaxindividerSötebasen.csv", locale = locale(encoding="latin1"), delim = ";", col_types = cols(Märkning2 = col_character(), Märke2Nr = col_character(), ÅlderLek3 = col_character())) %>%
+  rename(age_ad = AdultÅlder,
+         age_sm = SmoltÅlder,
+         length = Längd,
+         weight = Vikt,
+         year = Årtal,
+         origin = Ursprung,
+         sex = Kön,
+         river = VattenNamn,
+         stage = Stadium
+         ) %>%
+  mutate(country = "SWE",
+         origin = case_when(origin == "Odlad" ~ "reared",
+                            origin == "Vild" ~ "wild",
+                            .default = origin))
+# REMEMBER TO CORRECT THESE THREE Columns if used!!
+
+```
+
+## Model sex ratio
+
+What is the sex ratio, measured as proportion of females, in Swedish salmon and how does it vary within rivers and with salmon origin?
+
+```{r}
+# Calculated ratio from data:
+swe_sallaa %>% 
+  count(sex) %>%
+  mutate(Y = prop.table(n)) %>%
+  filter(sex == "f") %>%
+  pull(Y)
+# Y = 0.5134 prop females
+
+```
+
+I will start with a simple null model and build on this by adding predictors and then make it hierarchical.
+
+Using the binomial as likelihood and beta as prior (beta binomial), the posterior is beta (the beta is the conjugate prior for binomial, https://en.wikipedia.org/wiki/Conjugate_prior). In this case the likelihood is the success of being female out all individuals (number of trials). The posterior is the probability density of proportion female in the population. 
+
+Model description for Alternative 1 with beta prior with shape paramters a and b. This model without teh index $i$ is the null model. 
+
+$$Y_i~ \sim Binomial(n_i, p_i)$$
+$$p_i ~  \sim Beta(a,b)$$
+
+
+By instead building this as a linear model with predictors (origin or age seperately below) I use priors with normal distributions on the parameters (alpha and beta)
+
+$$logit(\mu_i) = \alpha + \beta x_i$$
+```{r beta dist}
+set.seed(123)
+p1 <- rbeta(n = 10000, shape1 = 50, shape2 = 50)
+p2 <- rbeta(n = 10000, shape1 = 500, shape2 = 500)
+
+#dbeta(x = 1, shape1 = 1, shape2 = 1)
+prior_sim <- data.frame(p1,p2)
+
+# Construct a density plot of the prior sample
+prior_sim %>%
+ggplot() + 
+  geom_density(aes(x = p1)) +
+  geom_density(aes(x = p2), col = "red")
+
+```
+
+## Grid posterior approximation
+For the beta-binomial model, the posterior is the probability of being female p (the same as the proportion females) in a sample with f females out of N individuals.
+
+The bayes theorem formulation of the posterior is:
+
+$$P(p|f,N) = P(f,N|p)P(p)/P(f,N)$$
+The prior is then a probability (zero to one) and then we use the beta distribution. 
+
+Using grid approximation for to approximate the posterior, I need to specify the grid (a discretisation of the  probability distribution that is the posterior) with the entries being the probabilities at which we estimate density. I need the prior which constrains the likelihood and this is beta. The density is estimated with the likelihood,  by the prior and normalized (?) by the ...
+
+```{r}
+p_grid <- seq(0, 1, length.out = 20)
+prior <- dbeta(p_grid,1,1) #hmm this will not constrain 
+
+```
+
+## Model 1 - beta binomial without predictors and not hierarchial
+Using the binomial as likelihood and beta as prior (beta-binomial distribution?), the posterior is beta. In this case the likelihood is the success of being female out all individuals (number of trials) given probability p.
+
+```{r}
+# data 
+sal_ind1 <- swe_sallaa %>%
+  filter(!sex %in% c("iu","o",NA),
+         !river %in% c("Västerhavet (hela) ICES SD 20-21", "Östersjön (hela) ICES SD 22-32"),
+         !is.na(age_ad),
+         !is.na(length),
+         stage == "Adult")
+
+# params for dbin
+n_fem <- sal_ind1 %>% filter(sex == "f") %>% summarise(n=n()) %>% pull(n) # number success
+n <- sal_ind1 %>% summarise(n=n()) %>% pull(n) # number of trials
+
+# Spec model (BUGS-language description)
+propfem_model_2 <- "model{
+    # Likelihood model for X number of fems
+    X ~ dbin(p, n)
+    
+    # Prior model for p
+    p ~ dbeta(a, b)
+}"
+
+# Build the model    
+propfem_jags <- jags.model(textConnection(propfem_model_2), 
+    data = list(a = 1, b = 1, X = n_fem, n = n),
+    n.chains = 2,
+    inits = list(p=0.5)
+  )
+
+# mcmc burn-in
+burn.in=10000
+update(propfem_jags, n.iter=burn.in)
+
+# produce more samples and a mcmc.list object
+iters=50000
+n.thin=1
+is(propfem_jags)
+samples = coda.samples(propfem_jags, 
+                       variable.names = c("p","X"),
+                       n.iter = iters,
+                       thin = n.thin)
+
+# summarise and look at the mcmc trace
+summary(samples) # X is the number of female individuals in the data (n_fem)
+mcmc_trace(samples, pars = "p") +
+  theme_light()
+mcmc_intervals(samples, pars = c("p"))
+
+#compare the posterior with correponding plot of the binomial based on random samples and the n_fem and number of males as shape parameters
+tidy_draws(samples) %>% filter(.chain == 1) %>%
+  ggplot() + 
+  geom_density(aes(x = p), color = "red") +
+  geom_density(data=data.frame(p = rbeta(n = 8000, shape1 = 3869, shape2 = 3667)), aes(x = p)) +
+  theme_light() 
+
+
+```
+
+## Model 2 - Binomial with origin as linear predictor (and rivers are observations, hmmm..)
+Origin is wild/reared in the data. Sex ratio might vary between these origins. Two approaches: add origin as predictor or make hiearchical. I do the predictor approach. 
+
+```{r}
+# calculate frequency of females 
+swe_sallaa %>%
+  filter(!sex %in% c("iu","o",NA),
+         !river %in% c("Västerhavet (hela) ICES SD 20-21", "Östersjön (hela) ICES SD 22-32"),
+         !is.na(age_ad),
+         !is.na(length),
+         stage == "Adult",
+         !is.na(origin)) %>%
+  summarise(n = n(), .by = c(origin, sex, river)) %>%
+  mutate(freq = n / sum(n),.by=c(origin,river)) %>%
+  filter(sex=="f", origin=="reared") %>%
+  arrange(river)
+
+# filter and summarise data
+sal_ind2 <- swe_sallaa %>%
+  filter(!sex %in% c("iu","o",NA),
+         !river %in% c("Västerhavet (hela) ICES SD 20-21", "Östersjön (hela) ICES SD 22-32"),
+         !is.na(age_ad),
+         !is.na(length),
+         stage == "Adult",
+         !is.na(origin)) %>%
+  summarise(obs = n(), .by = c(sex, origin, river)) %>%
+  mutate(obs_tot = sum(obs), .by = c(origin, river),
+         origin2 = if_else(origin == "reared", 0, 1)) %>%
+  filter(sex == "f")
+
+# params for dbin prior if using a beta, overall ratio
+# n_fem <- sal_ind2 %>% summarise(sum=sum(obs)) %>% pull(sum) # number success
+n_tot <- sal_ind2 %>% summarise(sum=sum(obs_tot)) %>% pull(sum) # number of trials
+
+# Spec model (BUGS-language description)
+propfem_model_2 <- "model{
+  # Likelihood model for X
+    
+  for(i in 1:nobs){
+    
+    obs[i] ~ dbin(p[i], obs_tot[i])
+  
+    logit(p[i]) <- alpha + b1*origin2[i]
+    
+    }
+    
+  # Priors 
+    b1 ~ dnorm(0,.0001)
+    alpha ~ dnorm(0,.0001)
+    
+}"
+
+data = c(sal_ind2 %>% select(obs, river, origin2, obs_tot) %>% as.list(),
+             list(n_fem=n_fem, n_tot = n_tot, nobs = nrow(sal_ind2)))
+
+# Build the model
+propfem_jags <- jags.model(textConnection(propfem_model_2), 
+    data = data,
+    n.chains = 2,
+    n.adapt = 1000,
+    inits = list(
+      list(b1=-0.1,alpha=5),
+      list(b1=0,alpha=10))
+  )
+
+# mcmc burn-in
+burn.in=10000
+update(propfem_jags, n.iter=burn.in)
+
+# produce more samples and a mcmc.list object
+iters=50000
+n.thin=10
+
+samples = coda.samples(propfem_jags, 
+                       variable.names = c("b1","alpha","p[1]"),
+                       n.iter = iters,
+                       thin = n.thin)
+
+# the mcmc trace
+mcmc_trace(samples, pars = c("b1", "alpha", "p[1]")) +
+  theme_light()
+
+mcmc_intervals(samples, pars = c("b1", "alpha"))
+
+# posterior probabilities of proportion females in reared and wild salmon (logit to probs)
+tidy_draws(samples) %>% filter(.chain == 1) %>%
+  ggplot() + 
+  geom_density(aes(x = exp(alpha+b1)/(1+exp(alpha+b1))), color = "red") + # wild 
+  geom_density(aes(x = exp(alpha)/(1+exp(alpha)))) + # reared
+  theme_light()
+
+# no difference
+```
+
+# Model 3 - Proportion females dependent on adult age?
+Binomial model the probability of number of females in a sample as a function of age.
+```{r}
+
+# filter and summarise data
+sal_ind3 <- swe_sallaa %>%
+  filter(!sex %in% c("iu","o",NA),
+         !river %in% c("Västerhavet (hela) ICES SD 20-21", "Östersjön (hela) ICES SD 22-32"),
+         !is.na(age_ad),
+         !is.na(length),
+         stage == "Adult",
+         !is.na(origin)) %>%
+  summarise(obs = n(), .by = c(sex, river, age_ad)) %>%
+  mutate(obs_tot = sum(obs), .by = c(river, age_ad))%>%
+  filter(sex == "f")
+  
+
+# the relationship between age and proportion returning females looks a bit curved but we can also asumme its linear
+sal_ind3 %>%
+  ggplot(aes(age_ad, obs/obs_tot)) +
+  geom_point() +
+  stat_smooth(method = "gam", formula = y ~ s(x, k=3)) +
+  stat_smooth(method = "lm", se = FALSE, color = "red") 
+
+# params for dbin prior if using a beta, overall ratio
+# n_fem <- sal_ind2 %>% summarise(sum=sum(obs)) %>% pull(sum) # number success
+n_tot <- sal_ind3 %>% summarise(sum=sum(obs_tot)) %>% pull(sum) # number of trials
+
+# Spec model
+propfem_model_3 <- "model{
+  # Likelihood model for X
+    
+  for(i in 1:nobs){
+    
+    obs[i] ~ dbin(p[i], obs_tot[i])
+  
+    logit(p[i]) <- alpha + b1*age_ad[i]
+    
+    }
+    
+  # Priors 
+    b1 ~ dnorm(0,.000001)
+    alpha ~ dnorm(0,.000001)
+  
+  # Predictions
+    est_a1 <- alpha + b1*1
+    est_a2 <- alpha + b1*2
+    est_a3 <- alpha + b1*3
+    est_a4 <- alpha + b1*4
+    est_a5 <- alpha + b1*5
+    est_a6 <- alpha + b1*6
+
+}"
+
+data = c(sal_ind3 %>% select(obs, river, age_ad, obs_tot) %>% as.list(),
+             list(n_fem=n_fem, n_tot = n_tot, nobs = nrow(sal_ind3)))
+
+# Build the model
+propfem_jags <- jags.model(textConnection(propfem_model_3), 
+    data = data,
+    n.chains = 2,
+    n.adapt = 1000,
+     # inits = list( # hashed to use generated itis by jags () "JAGS user manual V 4.3.0 (section 3.3.1) states that "the value selected by the function is usually the mean, median or mode of the distribution of the stochastic node (https://nandinidendukuri.com/blogposts/2023-10-12-initial-values-in-rjags/)"
+     # list(b1=-0.1,alpha=5, est_a1 = 0.5),
+     #list(b1=0,alpha=10))
+  )
+
+# mcmc burn-in
+burn.in=10000
+update(propfem_jags, n.iter=burn.in)
+
+# produce more samples and a mcmc.list object
+iters=50000
+n.thin=10
+
+samples = coda.samples(propfem_jags, 
+                       variable.names = c("b1","alpha","est_a1","est_a2","est_a3", "est_a4","est_a5", "est_a6"),
+                       n.iter = iters,
+                       thin = n.thin)
+
+# the mcmc trace
+mcmc_trace(samples, pars = c("b1","alpha","est_a1","est_a2","est_a3", "est_a4","est_a5", "est_a6")) +
+  theme_light()
+
+#gelman.diag() # "approximate convergence is diagnosed when the upper limit is close to 1"
+# doesn't seem to work when predictions are in the samples. 
+
+mcmc_intervals(samples, pars = c("b1", "alpha"))
+
+# posterior probabilities of proportion females in age groups (logit to probs)
+gather_draws(samples, c(b1, alpha) ) %>% filter(.chain == 1) %>%
+  ggplot() + 
+  geom_density(aes(x = exp(.value)/(1+exp(.value)), color = .variable)) + # age parameter estimate natural scale 
+  theme_light() +
+gather_draws(samples, c(b1, alpha) ) %>% filter(.chain == 1) %>%
+  ggplot() +
+  geom_density(aes(x = .value, color = .variable))
+  theme_light()
+
+tsamples <- tidy_draws(samples) %>%
+  mutate(b1 = exp(b1)/(1+exp(b1)),
+         alpha = exp(alpha)/(1+exp(alpha)),
+         est_a1 = exp(est_a1)/(1+exp(est_a1)),
+         est_a2 = exp(est_a2)/(1+exp(est_a2)),
+         est_a3 = exp(est_a3)/(1+exp(est_a3)),
+         est_a4 = exp(est_a4)/(1+exp(est_a4)))
+
+gather_draws(samples,est_a1,est_a2,est_a3,est_a4,est_a5,est_a6) %>% filter(.chain == 1) %>%
+  mutate(value = exp(.value)/(1+exp(.value))) %>%
+  ggplot() + 
+  geom_density(aes(x = value, color = .variable)) 
+  theme_light()
+
+# Plot the posterior mean regression model, why does this look good???
+sal_ind3 %>%
+  ggplot(aes(obs_tot, obs)) +
+  geom_point() +
+  geom_abline(intercept = mean(tsamples$alpha), slope = mean(tsamples$b1), color = "red") +
+  labs(y= "obs female", y = "obs tot")
+```
+                
+## Model 4 - Age dependent hierarchial beta binomial
+So we know that within rivers sex ratios differs between groups of fish of different age. In the previous model, we are calculating the sex ratio of each age group and the uncertainty around these estimates are based on the uncertainty on the intercept and slope parameters. By modelling this hierarchically, I make use of the information of population female proportion when estimating the fem prop of each age group. Using the beta binomial as in the first model but with probability of success varying independently between age groups (maybe a bit unreasonable assumption). Then the beta distribution is the prior for binomial probability and I put hyper priors on the beta shape parameters a and b.
+
+```{r}
+
+# filter and summarise data between ages instead of rivers. 
+sal_ind4 <- swe_sallaa %>%
+  filter(!sex %in% c("iu","o",NA),
+         !river %in% c("Västerhavet (hela) ICES SD 20-21", "Östersjön (hela) ICES SD 22-32"),
+         !is.na(age_ad),
+         age_ad > 0,
+         !is.na(length),
+         stage == "Adult",
+         !is.na(origin)) %>%
+  summarise(obs = n(), .by = c(sex, age_ad)) %>%
+  mutate(obs_tot = sum(obs), .by = c(age_ad)) %>%
+  filter(sex == "f") %>%
+  arrange(age_ad)
+
+# proportion returning females between groups
+sal_ind4 %>%
+  ggplot(aes(as.factor(age_ad), obs/obs_tot)) +
+  geom_boxplot()
+  geom_point()
+
+# Spec model
+propfem_model_4 <- "model{
+  # Likelihood model for X
+    
+  for(i in 1:nobs){
+    
+    obs[i] ~ dbin(p[i], obs_tot[i])
+  
+    }
+  
+  # Prior for p
+  
+  for (i in 1:nobs){
+  
+   p[i] ~ dbeta(a, b)
+   
+  }
+    
+  # hyperpriors using with sample mean expectation (mu = a/(a+b)) and sample size (eta) (https://bayesball.github.io/BOOK/bayesian-hierarchical-modeling.html#hierarchical-beta-binomial-modeling)
+  
+  a <- mu*eta
+  b <- (1-mu)*eta
+  mu ~ dbeta(mua, mub)
+  eta <- exp(logeta) # transformed logeta for logistic distribution
+  logeta ~ dlogis(logn, 1)
+  
+}"
+
+n_tot <- sal_ind4 %>% summarise(sum=sum(obs_tot)) %>% pull(sum) # number of trials
+#n_femtot <- sal_ind4 %>% summarise(sum=sum(obs)) %>% pull(sum) # number success
+#n_maltot <- n_tot - n_femtot # number fails
+
+data = c(sal_ind4 %>% select(obs, obs_tot, age_ad) %>% as.list(), 
+         list(mub = 1, mua = 1 , logn = log(100), n_tot = n_tot, nobs = nrow(sal_ind4)))
+
+# Build the model
+propfem_jags <- jags.model(textConnection(propfem_model_4), 
+    data = data,
+    n.chains = 2,
+    n.adapt = 1000,
+    # inits = list( # hashed to use generated itis by jags () "JAGS user manual V 4.3.0 (section 3.3.1) states that "the value selected by the function is usually the mean, median or mode of the distribution of the stochastic node (https://nandinidendukuri.com/blogposts/2023-10-12-initial-values-in-rjags/)"
+  )
+
+# mcmc burn-in
+burn.in=10000
+update(propfem_jags, n.iter=burn.in)
+
+# produce more samples and a mcmc.list object
+iters=50000
+n.thin=10
+
+samples = coda.samples(propfem_jags, 
+                       variable.names = "p",
+                       #variable.names = c("b1","alpha","est_a2","est_a3"),
+                       n.iter = iters,
+                       thin = n.thin)
+summary(samples)
+mcmc_trace(samples)
+
+gelman.diag(samples) # "approximate convergence is diagnosed when the upper limit is close to 1"
+# doesnt work when predictions are in the samples...
+
+mcmc_intervals(samples)
+
+# age_ad seems to be equal to ag_ad2 so I can just rename the group levels 
+#sal_ind4 %>% mutate(age_ad2 = as.numeric(as.factor(age_ad))) %>% select(age_ad, age_ad2) %>% distinct()
+
+gather_draws(samples, p[i]) %>% filter(.chain == 1) %>%
+#median_qi()
+  ggplot() + 
+  geom_density(aes(x = .value, color = factor(i))) + # age parameter i
+  theme_light() 
+
+```
+This is nice, prop females increaes with age for the fisrt 3 years and the levels out but data is scarce for 4-6. The posterior for age 1-3 looks similar to the predictions from the regresssion model (model 3) but not for age 4-6. This is of course sonce we are in model 3 modelling a linear relationship between age and proprtion females and we dotn have that much data for 4-6 (?). The relationship between age and prop- femles seems to be quadratic or at least level off at age > 3.
+
+## Model 5 - River dependent hierarchial beta binomial
+
+```{r}
+
+# filter and summarise data between ages instead of rivers. 
+sal_ind5 <- swe_sallaa %>%
+  filter(!sex %in% c("iu","o",NA),
+         !river %in% c("Västerhavet (hela) ICES SD 20-21", "Östersjön (hela) ICES SD 22-32"),
+         !is.na(age_ad),
+         age_ad > 0,
+         !is.na(length),
+         stage == "Adult",
+         !is.na(origin)) %>%
+  summarise(obs = n(), .by = c(sex, river)) %>%
+  mutate(obs_tot = sum(obs), .by = c(river)) %>%
+  filter(sex == "f")
+
+head(sal_ind5)
+
+# proportion returning females in age groups 
+sal_ind5 %>%
+  ggplot(aes(as.factor(river), obs/obs_tot)) +
+  geom_boxplot()
+  geom_point()
+
+# Spec model
+propfem_model_5 <- "model{
+  # Likelihood model for X
+    
+  for(i in 1:nobs){
+    
+    obs[i] ~ dbin(p[i], obs_tot[i])
+  
+    }
+  
+  # Prior for p
+  
+  for (i in 1:nobs){
+  
+   p[i] ~ dbeta(a, b)
+   
+  }
+    
+  # hyperpriors using with sample mean expectation (mu = a/(a+b)) and sample size (eta) (https://bayesball.github.io/BOOK/bayesian-hierarchical-modeling.html#hierarchical-beta-binomial-modeling)
+  
+  a <- mu*eta
+  b <- (1-mu)*eta
+  mu ~ dbeta(mua, mub)
+  eta <- exp(logeta) # transformed logeta for logistic distribution
+  logeta ~ dlogis(logn, 1)
+  
+}"
+
+n_tot <- sal_ind5 %>% summarise(sum=sum(obs_tot)) %>% pull(sum) # number of trials
+#n_femtot <- sal_ind5 %>% summarise(sum=sum(obs)) %>% pull(sum) # number success
+#n_maltot <- n_tot - n_femtot # number fails
+
+data = c(sal_ind5 %>% select(obs, obs_tot) %>% as.list(), 
+         list(mub = 1, mua = 1 , logn = log(100), n_tot = n_tot, nobs = nrow(sal_ind5)))
+
+# Build the model
+propfem_jags <- jags.model(textConnection(propfem_model_5), 
+    data = data,
+    n.chains = 2,
+    n.adapt = 1000,
+    # inits = list( # hashed to use generated itis by jags () "JAGS user manual V 4.3.0 (section 3.3.1) states that "the value selected by the function is usually the mean, median or mode of the distribution of the stochastic node (https://nandinidendukuri.com/blogposts/2023-10-12-initial-values-in-rjags/)"
+  )
+
+# mcmc burn-in
+burn.in=10000
+update(propfem_jags, n.iter=burn.in)
+
+# produce more samples and a mcmc.list object
+iters=50000
+n.thin=10
+
+samples = coda.samples(propfem_jags, 
+                       variable.names = "p",
+                       #variable.names = c("b1","alpha","est_a2","est_a3"),
+                       n.iter = iters,
+                       thin = n.thin)
+summary(samples)
+mcmc_trace(samples)
+
+gelman.diag(samples) # "approximate convergence is diagnosed when the upper limit is close to 1"
+# doesnt work when predictions are in the samples...
+
+mcmc_intervals(samples)
+
+# age_ad seems to be equal to ag_ad2 so I can just rename the group levels 
+#sal_ind5 %>% mutate(age_ad2 = as.numeric(as.factor(age_ad))) %>% select(age_ad, age_ad2) %>% distinct()
+
+gather_draws(samples, p[i]) %>% filter(.chain == 1) %>%
+#median_qi()
+  ggplot() + 
+  geom_density(aes(x = .value, color = factor(i))) + # age parameter i
+  theme_light() 
+
+```
+Does this variation depend on age or something else thats is due to river identity?
+
+
+## Model 6 - River dependent hierarchial beta binomial with an age predictor
+
+Model 6 formulation. Index $i$ is the observations (n=rivers_j*age_ij), j is the grouping (river) and age i  within each river.
+
+$$Y_i~ \sim Binomial(n_i, p_i)$$
+
+$$logit(p_i) ~ \sim \alpha_j + \beta_1*Age$$
+
+$$ \alpha_j ~  \sim Beta(a,b)$$
+
+```{r}
+
+# filter and summarise data between ages instead of rivers. 
+sal_ind6 <- swe_sallaa %>%
+  filter(!sex %in% c("iu","o",NA),
+         !river %in% c("Västerhavet (hela) ICES SD 20-21", "Östersjön (hela) ICES SD 22-32"),
+         !is.na(age_ad),
+         age_ad > 0,
+         !is.na(length),
+         stage == "Adult",
+         !is.na(origin)) %>%
+  summarise(obs = n(), .by = c(sex, river, age_ad)) %>%
+  mutate(obs_tot = sum(obs), .by = c(age_ad, river)) %>%
+  filter(sex == "f") %>%
+  mutate(river2 = as.numeric(as.factor(river))) 
+
+# proportion returning females in age groups 
+sal_ind6 %>%
+  ggplot(aes(as.factor(age_ad), obs/obs_tot)) +
+  geom_boxplot() +
+  geom_point()
+#+ b1*age_ad[i]^2
+# Spec model
+propfem_model_6 <- "model{
+  # Likelihood model for X
+    
+  for(i in 1:nobs){
+    
+    obs[i] ~ dbin(p[i], obs_tot[i])
+    
+    p[i] <- alpha[ river2[i] ] + b1*age_ad[i] #SKIPPING link for now as I cant work out the prior transformation when tructating alpha and also posterior gets lower limit inv.logit(0.0001) (ask BECKY!)
+    
+    }
+  
+  # Prior for p
+  
+  for (j in 1:ngroups){
+  
+   alpha[j] ~ dbeta(a, b) T(0.001,0.999)
+   
+  }
+    
+  # hyperpriors using with sample mean expectation (mu = a/(a+b)) and sample size (eta) (https://bayesball.github.io/BOOK/bayesian-hierarchical-modeling.html#hierarchical-beta-binomial-modeling)
+  
+  a <- mu*eta 
+  b <- (1-mu)*eta
+  mu ~ dbeta(mua, mub)
+  eta <- exp(logeta) # transformed logeta for logistic distribution
+  logeta ~ dlogis(logn, 1)
+  b1 ~ dnorm(0,0.0001)
+  b2 ~ dnorm(0,0.0001)
+  
+}"
+
+
+# Error "Slicer stuck at value with infinite density"
+# https://stackoverflow.com/questions/47135726/error-slicer-stuck-at-value-with-infinite-density-running-binomial-beta-model
+# p[i] ~ dbeta( ( mu[i] * theta[i]) , ((1-mu[i])*theta[i])) T(0.001,0.999)
+# with T(L,U) "X is known to lie between L and U" (Rjags mannual)
+# but how to do this on link scale?
+
+n_tot <- sal_ind6 %>% summarise(sum=sum(obs_tot)) %>% pull(sum) # number of trials
+#n_femtot <- sal_ind6 %>% summarise(sum=sum(obs)) %>% pull(sum) # number success
+#n_maltot <- n_tot - n_femtot # number fails
+
+data = c(sal_ind6 %>% select(obs, obs_tot, age_ad, river2) %>% as.list(), 
+         list(mub = 1, mua = 1 , logn = log(100), n_tot = n_tot, ngroups = length(unique(sal_ind6$river)), nobs = nrow(sal_ind6)))
+
+
+# Build the model
+propfem_jags <- jags.model(textConnection(propfem_model_6), 
+    data = data,
+    n.chains = 2,
+    n.adapt = 1000,
+    # inits = list( # hashed to use generated itis by jags () "JAGS user manual V 4.3.0 (section 3.3.1) states that "the value selected by the function is usually the mean, median or mode of the distribution of the stochastic node (https://nandinidendukuri.com/blogposts/2023-10-12-initial-values-in-rjags/)"
+  )
+
+# mcmc burn-in
+burn.in=10000
+update(propfem_jags, n.iter=burn.in)
+
+# produce more samples and a mcmc.list object
+iters=50000
+n.thin=100
+
+samples = coda.samples(propfem_jags, 
+                       variable.names = c("b1","alpha","p"),
+                       n.iter = iters,
+                       thin = n.thin)
+
+summary(samples)
+mcmc_trace(samples)
+
+#gelman.diag(samples) # "approximate convergence is diagnosed when the upper limit is close to 1"
+# doesnt work when predictions are in the samples...
+
+mcmc_intervals(samples)
+
+ggplot() +
+  geom_point(data = sal_ind6, aes(x = obs_tot,y = obs)) + 
+  geom_abline(data = summarise_draws(samples) %>%  filter(str_detect(variable, 'alpha'), ), aes(intercept = mean, slope = summarise_draws(samples) %>% filter(variable == "b1") %>% pull(mean), color = variable))
+
+gather_draws(samples, p[i] ) %>% filter(.chain == 1) %>%
+  #mutate(value = exp(.value)/(1+exp(.value))) %>%
+  left_join(sal_ind6 %>% select(river, age_ad) %>% mutate(i = row_number()), join_by(i)) %>%
+  ggplot() + 
+  geom_density(aes(x = .value, color = as.factor(age_ad))) + # age parameter estimate natural scale 
+  facet_wrap(~river)
+  theme_light() #+
+
+gather_draws(samples, p[i], alpha[i]) %>% filter(.chain == 1) %>%
+  mutate(value = exp(.value)/(1+exp(.value))) %>%
+#median_qi()
+  ggplot() + 
+  geom_density(aes(x = value, color = factor(i))) + # age parameter i
+  facet_wrap(~alpha)
+  theme_light() 
+
+```
+
+I need to truncate the beta prior!! However, when that is fixed, we know from model 4 that the relationship prop females and age is not linear but more quadratic. Lets try addd a polynomial effect.
+
+## Model 7 - Quadratic age predictor and river dependent hierarchial beta binomial with an 
+
+```{r}
+
+# filter and summarise data between ages instead of rivers. 
+sal_ind7 <- swe_sallaa %>%
+  filter(!sex %in% c("iu","o",NA),
+         !river %in% c("Västerhavet (hela) ICES SD 20-21", "Östersjön (hela) ICES SD 22-32"),
+         !is.na(age_ad),
+         age_ad > 0,
+         !is.na(length),
+         stage == "Adult",
+         !is.na(origin)) %>%
+  summarise(obs = n(), .by = c(sex, river, age_ad)) %>%
+  mutate(obs_tot = sum(obs), .by = c(age_ad, river)) %>%
+  filter(sex == "f") %>%
+  mutate(river2 = as.numeric(as.factor(river))) 
+
+# proportion returning females in age groups 
+sal_ind6 %>%
+  ggplot(aes(as.factor(age_ad), obs/obs_tot)) +
+  geom_boxplot() +
+  geom_point()
+#+ b1*age_ad[i]^2
+# Spec model
+propfem_model_7 <- "model{
+  # Likelihood model for X
+    
+  for(i in 1:nobs){
+    
+    obs[i] ~ dbin(p[i], obs_tot[i])
+    
+    p[i] <- alpha[ river2[i] ] + b1*age_ad[i] + b2*age_ad[i]^2 #SKIPPING link for now as I cant work out the prior transformation when tructating alpha and also posterior gets lower limit inv.logit(0.0001) (ask BECKY!)
+    
+    }
+  
+  # Prior for p
+  
+  for (j in 1:ngroups){
+  
+   alpha[j] ~ dbeta(a, b) T(0.001,0.999)
+   
+  }
+    
+  # hyperpriors using with sample mean expectation (mu = a/(a+b)) and sample size (eta) (https://bayesball.github.io/BOOK/bayesian-hierarchical-modeling.html#hierarchical-beta-binomial-modeling)
+  
+  a <- mu*eta 
+  b <- (1-mu)*eta
+  mu ~ dbeta(mua, mub)
+  eta <- exp(logeta) # transformed logeta for logistic distribution
+  logeta ~ dlogis(logn, 1)
+  b1 ~ dnorm(0,0.0001)
+  b2 ~ dnorm(0,0.0001)
+  
+}"
+
+
+# Error "Slicer stuck at value with infinite density"
+# https://stackoverflow.com/questions/47135726/error-slicer-stuck-at-value-with-infinite-density-running-binomial-beta-model
+# p[i] ~ dbeta( ( mu[i] * theta[i]) , ((1-mu[i])*theta[i])) T(0.001,0.999)
+# with T(L,U) "X is known to lie between L and U" (Rjags mannual)
+# but how to do this on link scale?
+
+n_tot <- sal_ind7 %>% summarise(sum=sum(obs_tot)) %>% pull(sum) # number of trials
+#n_femtot <- sal_ind6 %>% summarise(sum=sum(obs)) %>% pull(sum) # number success
+#n_maltot <- n_tot - n_femtot # number fails
+
+data = c(sal_ind7 %>% select(obs, obs_tot, age_ad, river2) %>% as.list(), 
+         list(mub = 1, mua = 1 , logn = log(100), n_tot = n_tot, ngroups = length(unique(sal_ind6$river)), nobs = nrow(sal_ind6)))
+
+
+# Build the model
+propfem_jags <- jags.model(textConnection(propfem_model_7), 
+    data = data,
+    n.chains = 2,
+    n.adapt = 1000,
+    # inits = list( # hashed to use generated itis by jags () "JAGS user manual V 4.3.0 (section 3.3.1) states that "the value selected by the function is usually the mean, median or mode of the distribution of the stochastic node (https://nandinidendukuri.com/blogposts/2023-10-12-initial-values-in-rjags/)"
+  )
+
+# mcmc burn-in
+burn.in=10000
+update(propfem_jags, n.iter=burn.in)
+
+# produce more samples and a mcmc.list object
+iters=50000
+n.thin=100
+
+samples = coda.samples(propfem_jags, 
+                       variable.names = c("b1","alpha","p"),
+                       n.iter = iters,
+                       thin = n.thin)
+
+
+summary(samples)
+mcmc_trace(samples)
+
+gelman.diag(samples) # "approximate convergence is diagnosed when the upper limit is close to 1"
+# doesnt work when predictions are in the samples...
+
+mcmc_intervals(samples)
+
+ggplot() +
+  geom_point(data = sal_ind7, aes(x = obs_tot,y = obs)) + 
+  geom_abline(data = summarise_draws(samples) %>%  filter(str_detect(variable, 'alpha'), ), aes(intercept = mean, slope = summarise_draws(samples) %>% filter(variable == "b1") %>% pull(mean), color = variable))
+
+gather_draws(samples, p[i] ) %>% filter(.chain == 1) %>%
+  #mutate(value = exp(.value)/(1+exp(.value))) %>%
+  left_join(sal_ind7 %>% select(river, age_ad) %>% mutate(i = row_number()), join_by(i)) %>%
+  ggplot() + 
+  geom_density(aes(x = .value, color = as.factor(age_ad))) + # age parameter estimate natural scale 
+  facet_wrap(~river)
+  theme_light() #+
+
+gather_draws(samples, p[i], alpha[i]) %>% filter(.chain == 1) %>%
+  mutate(value = exp(.value)/(1+exp(.value))) %>%
+#median_qi()
+  ggplot() + 
+  geom_density(aes(x = value, color = factor(i))) + # age parameter i
+  facet_wrap(~alpha)
+  theme_light() 
+
+```
+These posteriors are no good either
