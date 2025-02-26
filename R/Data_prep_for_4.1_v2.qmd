@@ -39,7 +39,7 @@ invisible(lapply(pkgs, library, character.only = T))
 
 options(ggplot2.continuous.colour = "viridis")
 theme_set(theme_grey()) # check why global theme option not working when rendering
-devtools::source_url("https://raw.githubusercontent.com/VThunell/diasp-lht/main/R/functions/map-plot.R")
+devtools::source_url("https://raw.githubusercontent.com/VThunell/diasp-lht/main/R/functions/map-plot.R") # message of SHA-1 hash for file
 
 # Set path
 home <- here::here()
@@ -76,7 +76,8 @@ The data is filtered and cleaned in Section 4 when combining data.
 
 # Sweden SLU database "Sötebasen"
 swe.sallaa <- read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming data/salmon/LaxindividerSötebasen.csv", delim = ";", locale = locale(encoding="latin1"), col_types = cols(Märkning2 = col_character(), Märke2Nr = col_character(), ÅlderLek3 = col_character())) %>%
-  rename(age.ad = AdultÅlder,
+  # remove individuals without length or sea age
+  rename(age.sea = AdultÅlder,
          age.sm = SmoltÅlder,
          length = Längd,
          weight = Vikt,
@@ -94,7 +95,7 @@ swe.sallaa <- read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Inc
 
 # Finnish back calculated growth
 fin.sallaa <- read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming data/salmon/Tornionjoki_growth measurements_1970s-.txt", delim = "\t", locale = locale(encoding="latin1", decimal_mark = ",")) %>%
-  rename(age.ad = 'SEA-AGE',
+  rename(age.sea = 'SEA-AGE',
          age.sm = 'SMOLT AGE',
          length = LENGTH,
          weight = WEIGHT,
@@ -108,7 +109,7 @@ fin.sallaa <- read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Inc
 
 # France length at age
 fra.sallaa <- read_csv2(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming data/salmon/SAT_TailleAge_France.csv", locale = locale(encoding="latin1")) %>%
-  rename(age.ad = sea_age,
+  rename(age.sea = sea_age,
          age.sm = smolt_age,
          ) %>%
   mutate(date = dmy_hm(cam_date_heure_fin, truncated = 2),
@@ -139,13 +140,12 @@ Six data sets build the fecundity length data:
     + Only stripped (from what V.T. knows, methods description lacking atm)
     + Not total fecundity as in Sweden 1
 * Finland 1
-    + Decribed in the report "HYDROACOUSTIC ASSESSMENT OF SALMON IN THE RIVER TORNIONJOKI - FINAL REPORT, EU STUDY PROJECT 96-069"
-    + Total fecundity available (stripped + dissected). I.e.  All eggs are counted!
+    + Described in the report "HYDROACOUSTIC ASSESSMENT OF SALMON IN THE RIVER TORNIONJOKI - FINAL REPORT, EU STUDY PROJECT 96-069"
+    + Total fecundity available (stripped + dissected). I.e. an estimation of all eggs!
     + From river Tornionjoki
-    + Both reared (finclipped) and wild individuals (adipose fin intact)
+    + Both reared (finclipped) and wild individuals (adipose fin intact) but the majority are wild.
 * Finland 2
     + From river Tornionjoki and Simojoki
-    + Total fecundity available (stripped + dissected). I.e.  All eggs are counted!
     + wild, reared and NA mix of individuals
 * France
     + Described in the Samarch report "Changes in sex ratio and fecundity of salmonids" (M. Nevoux et al. 2020, Deliverable D3.3.1)
@@ -272,7 +272,7 @@ SU.rivers = bind_cols(river = c("Ätran","Örekilsälven","Göta älv","Lagan","
 
 # Add AU and SU to lat lons from Swedish sötebasen
 SweFin.rivers <- swe.sallaa %>%
-  drop_na(length, age.ad) %>%
+  drop_na(length, age.sea) %>%
   distinct(river, WGS84_N_Vatten, WGS84_E_Vatten) %>%
   rename(lat = WGS84_N_Vatten,
          lon = WGS84_E_Vatten) %>%
@@ -349,7 +349,7 @@ fra.rivers2  <- fra.rivers %>%
                          river == "Etel" ~ 47.656579,
                          river == "Thar" ~ 48.800103,
                          river == "Loire" ~ 47.281585,
-                         river == "Horn" ~ 49.853595,
+                         river == "Horn" ~ 48.688119,
                          river == "Durdent" ~ 48.687806,
                          river == "Canche" ~ 50.527333,
                          river == "Couesnon" ~ 48.625250,
@@ -362,7 +362,6 @@ fra.rivers2  <- fra.rivers %>%
                          river == "Finistere" ~ -4.080223,
                          river == "Etel" ~ -3.209520,
                          river == "Quillec" ~ -4.069429,
-                         river == "Etel" ~ 47.656579,
                          river == "Thar" ~ -1.568264,
                          river == "Loire" ~ -2.152414,
                          river == "Horn" ~ -4.058391,
@@ -370,7 +369,8 @@ fra.rivers2  <- fra.rivers %>%
                          river == "Canche" ~ 1.614964,
                          river == "Couesnon" ~ -1.511461,
                          .default = lon)) %>%
-  select(-subregion,-region,-id,)
+  # remove non-necessary info
+  select(-subregion,-region,-id,-river.abb) 
 
 ```
 
@@ -378,13 +378,14 @@ fra.rivers2  <- fra.rivers %>%
 
 ### 3a. Filter, clean and combine data
 
-* Keeping only adult individuals (removing NA and 0 age individuals).
+* Keeping only adult individuals (removing NA and 0 sea age individuals).
 * Remove NA values in length and age.
 * Remove individuals from Swedish lakes 
+* Remove three mark-recaptured individuals in Swedish data
 * Remove an obvious outlier in the French data  
 * Correct an obvious outlier in the French data  
 * Calculate total length ($L_t$) from fork length ($L_f$) where needed in the French data based on the model: $exp(0.2892351)*L_f^{0.9623479}$ (see below).
-* The french data has two sources of sex identification (observed in the field vs genetic). I use Genetic sex where available and complete these data with field observations. M. Nevoux considers field observations correct only from (mid) August. From the data where both genetic and field method are available, 14% are incorrect. **Keep this in mind if using this info**. The method of sex determination in the Swedish and Finish data are unknown to V.T. and far from all are determined (many NAs).
+* The french data has two sources of sex identification (observed in the field vs genetic). I use ßGenetic sex where available and complete these data with field observations. M. Nevoux considers field observations correct only from (mid) August. From the data where both genetic and field method are available, 14% are incorrect. **Keep this in mind if using this info**. The sex in Finnish (and likely in Swedish data) is determined visually when gutting the fish and far from all are determined (many NAs).
 
 The kept variables are: length, river, country, origin, year, age_ad, sex. Spatial varaibles are added to the data from the tables created in 2.
 
@@ -417,21 +418,30 @@ fra.sallaa %>%
   geom_line(aes(x = fork_length,  y = exp(0.2892351)*fork_length^0.9623479), col = "red") +
   labs(title = "fork to total length fit length at age")
 
+# There are three mark-recaptured individuals in Swedish db Sötebasaen when NA lengths and ages are removed. As they are so few: Id them and remove the first age-length messurement and keep later one (when they are bigger). They are all recaptured within the same year.
+dup.markrec <- swe.sallaa %>%
+  # remove NAs
+  drop_na(length, age.sea, MärkeNr) %>%
+  # find the mark-recaptured ones by counting rows by tag number 
+  mutate(n = n(), .by = MärkeNr) %>% 
+  # filter the mark-recaps and those with info that is not tags ("finclipped")
+  filter(n > 1 & !MärkeNr == "Fenklippt") %>%
+  # id the mark (shorter) instance
+  slice_min(length, by = MärkeNr)
+
 # Combine the data
 all.sallaa <- swe.sallaa %>%
-  # remove the lakes in the data and remove age 0 adults
+  # remove the mark-recaps
+  anti_join(dup.markrec) %>%
+  # remove the lakes in the data and remove sea age 0 adults
   filter(!river %in% c("Vättern", "Vänern"), 
-         !age.ad == 0) %>% 
-  # remove duplicated fish individuals 
-  # drop_na(MärkeNr) %>% HERE
-  # mutate(n = n(), .by=MärkeNr) #%>% 
-  # remove individuals without length or adult age
-  drop_na(length, age.ad) %>%
-  dplyr::select("length", "river", "country", "origin", "year", "AU", "age.ad", "sex") %>%
+         !age.sea == 0) %>% 
+  drop_na(length, age.sea) %>%
+  dplyr::select("country", "year", "river", "origin", "length", "AU", "age.sea", "sex") %>%
   bind_rows(fin.sallaa %>% 
-              # remove individuals without length or adult age
-              drop_na(length, age.ad) %>% 
-              dplyr::select("length", "river", "country", "origin", "year", "length", "sex")) %>%
+              # remove individuals without length or sea age
+              drop_na(length, age.sea) %>% 
+              dplyr::select("country", "year", "river", "origin", "length", "age.sea", "sex")) %>%
   left_join(SweFin.rivers, by = "river") %>%
   # prefer the existing AU before the new one.
   mutate(asses.unit = if_else(is.na(AU), asses.unit, AU)) %>% 
@@ -453,58 +463,80 @@ all.sallaa <- swe.sallaa %>%
                      sex = str_to_lower(if_else(is.na(gen.sex), field.sex, gen.sex)), 
                      # correct a "1" valued entry to NA
                      sex = if_else(sex %in% c("f","m"), sex, NA),
-                     # calculate total form fork length
-                     length = if_else(is.na(total_length), exp(0.2892351)*fork_length^0.9623479, total_length), 
+                     # calculate total from fork length and correct TL outlier: 51 mm and 2 yo
+                     length = if_else(is.na(total_length) | total_length == 51, exp(0.2892351)*fork_length^0.9623479, total_length), 
                      # Correct one ind. at 7900 mm and assume it is 790 mm
                      length = ifelse(length > 2000, length/10, length),
-                     # Correct outlier that is 51 mm and 2 yo
-                     length = ifelse(length == 51, length*10, length),
                      ) %>% 
               drop_na(age.sm,age.sm,length) %>%
-              dplyr::select("river","country", "origin", "year", "length", "age.sm", "age.ad", "sex") %>%
+              dplyr::select("country", "year", "river", "origin", "length", "age.sea", "sex") %>%
               left_join(fra.rivers2))
 
 str(all.sallaa)
+
+all.sallaa %>%
+  filter(river == "Scorff",
+         length < 580 & length >560,
+         year == 2019)
+  
 
 ```
 
 ### 3b. Map and summary of length at age
 
 ```{r}
-# length at age by a suitable spatial aggregation (region2) is defined as French regions, Swedish west coast and Baltic assessment units. This results in 10 spatial units (plus an NA group which will disappear when the French region information is complete) which should represent genetic and ecological units. There are observations without assessment units in the Baltic as the only spatial information we have is that they are from the Baltic as a whole. 
+# length at age by a suitable spatial aggregation (spat.agg) is defined as French regions, Swedish west coast and Baltic assessment units. This results in 10 spatial units (plus an NA group which will disappear when the French region information is complete) which should represent genetic and ecological units. There are observations without assessment units in the Baltic as the only spatial information we have is that they are from the Baltic as a whole. 
 all.sallaa %>%
-  mutate(region2 = case_when(region == "Baltic.sea" ~ paste0(region,":AU-",asses.unit),
+  mutate(spat.agg = case_when(region == "Baltic.sea" ~ paste0(region,":AU-",asses.unit),
                              region == "Swedish.westcoast" ~ region, 
                              .default = region.gen)) %>%
-  ggplot(aes(age.ad, length, color = region2)) +
+  ggplot(aes(age.sea, length, color = spat.agg)) +
   geom_point() +
-  facet_wrap( ~region2) +
+  facet_wrap( ~spat.agg) +
   expand_limits(x = 0)
 
 plot_map_Euro +
   geom_point(data = all.sallaa %>%
-               drop_na(lon, lat) %>% # French missing lat/lon
+               drop_na(lon, lat) %>%
                mutate(n.years = n_distinct(year), .by=river) %>%
-               mutate(Year.count = ifelse(n.years > 14, ">15","<15")) %>%
+               mutate(count.year = ifelse(n.years > 14, ">15","<15")) %>%
                add_utm_columns(ll_names = c("lon", "lat"), utm_crs = 32633), 
-             aes(X*1000, Y*1000, color = Year.count), size = 0.5, show.legend = TRUE) +
+             aes(X*1000, Y*1000, color = count.year), size = 0.5, show.legend = TRUE) +
   theme_sleek(base_size = 6) +
   guides(colour = guide_legend(title.position = "top", title.hjust = 0.5),
-         fill = guide_legend(title.position = "top", title.hjust = 0.5)) +
-  labs(title = "lat/lon for many French rivers missing")
+         fill = guide_legend(title.position = "top", title.hjust = 0.5)) 
+
+# for Data request letter 
+# plot_map_Euro +
+#   geom_point(data = all.sallaa %>%
+#                drop_na(lon, lat) %>%
+#                mutate(n.years = n_distinct(year), .by=river) %>%
+#                mutate(count.year = ifelse(n.years > 14, ">15","<15")) %>%
+#                add_utm_columns(ll_names = c("lon", "lat"), utm_crs = 32633),
+#              aes(X*1000, Y*1000), color = "deeppink", size = 0.3, show.legend = TRUE) +
+#   theme_sleek()
+# ggsave("laa_map.png", scale = 0.8)
+
+
+all.sallaa %>%
+  drop_na(lon, lat) %>%
+  distinct(lon,lat, .keep_all = TRUE) %>%
+  filter(lat < 51,
+         lon < -3) %>%
+  arrange(lat)
 
 # ind counts by river FRANCE
 all.sallaa %>%
   mutate(river1 = paste0(country,":",river)) %>% 
   drop_na(river) %>%
   summarise(count = n(), .by = c(year, country, river1)) %>%
-  mutate(Ind.count = as.factor(ifelse(count > 50, ">50",
+  mutate(count.ind = as.factor(ifelse(count > 50, ">50",
                                   ifelse(count > 30 & count <= 50, ">30",
                                          ifelse(count > 10 & count <= 30, ">10",
                                          "<10")))),
-         Ind.count = fct_reorder(Ind.count, count)) %>%
+         count.ind = fct_reorder(count.ind, count)) %>%
   filter(country == "FRA") %>%
-  ggplot(aes(year, river1, fill = Ind.count, group = country)) +
+  ggplot(aes(year, river1, fill = count.ind, group = country)) +
   geom_tile(color = "gray30") +
   scale_fill_viridis_d() +
   theme_light() +
@@ -515,13 +547,13 @@ all.sallaa %>%
   mutate(river1 = paste0(country,":",river)) %>% 
   drop_na(river) %>%
   summarise(count = n(), .by = c(year, country, river1)) %>%
-  mutate(Ind.count = as.factor(ifelse(count > 50, ">50",
+  mutate(count.ind = as.factor(ifelse(count > 50, ">50",
                                   ifelse(count > 30 & count <= 50, ">30",
                                          ifelse(count > 10 & count <= 30, ">10",
                                          "<10")))),
-         Ind.count = fct_reorder(Ind.count, count)) %>%
+         count.ind = fct_reorder(count.ind, count)) %>%
   filter(!country == "FRA") %>%
-  ggplot(aes(year, river1, fill = Ind.count, group = country)) +
+  ggplot(aes(year, river1, fill = count.ind, group = country)) +
   geom_tile(color = "gray30") +
   scale_fill_viridis_d() +
   theme_light()
@@ -534,7 +566,7 @@ By suggested spatial aggregation:
 all.sallaa %>%
   drop_na(river) %>%
   summarise(count = n(), .by = c(year, region, region.gen, asses.unit)) %>%
-  mutate(region2 = case_when(region == "Baltic.sea" ~ paste0(region,":AU-",asses.unit),
+  mutate(spat.agg = case_when(region == "Baltic.sea" ~ paste0(region,":AU-",asses.unit),
                              region == "Swedish.westcoast" ~ region, 
                              .default = region.gen),
          Ind.count = as.factor(ifelse(count > 50, ">50",
@@ -542,19 +574,49 @@ all.sallaa %>%
                                              ifelse(count > 10 & count <= 30, ">10",
                                                     "<10")))),
          Ind.count = fct_reorder(Ind.count, count)) %>% 
-  ggplot(aes(year, region2, fill = Ind.count)) +
+  ggplot(aes(year, spat.agg, fill = Ind.count)) +
   geom_tile(color = "gray30") +
   scale_fill_viridis_d() +
   theme_light()
 
-# sex information by suggested spatial region
+# Ind counts for letter to Data request
+# all.sallaa %>%
+#   drop_na(river) %>%
+#   summarise(count = n(), .by = c(year, region, region.gen, asses.unit)) %>%
+#   mutate(spat.agg = case_when(region == "Baltic.sea" ~ paste0(region,":AU-",asses.unit),
+#                              region == "Swedish.westcoast" ~ region,
+#                              .default = region.gen),
+#          Ind.count = as.factor(ifelse(count > 50, ">50",
+#                                       ifelse(count > 30 & count <= 50, ">30",
+#                                              ifelse(count > 10 & count <= 30, ">10",
+#                                                     "<10")))),
+#          Ind.count = fct_reorder(Ind.count, count)) %>%
+#   ggplot(aes(year, spat.agg, fill = Ind.count)) +
+#   geom_tile(color = "gray30") +
+#   scale_fill_viridis_d() +
+#   theme_light()+
+#   labs(y = "")
+# ggsave("laa_temp.png", scale = 0.8)
+
+
+  # sex information by suggested spatial region
 all.sallaa %>%
   drop_na(river) %>%
-  summarise(count = n(), .by = c(year, region.gen, region, asses.unit, sex)) %>%
-  mutate(region2 = case_when(region == "Baltic.sea" ~ paste0(region,":AU-",asses.unit),
+  summarise(ind.count = n(), .by = c(region.gen, region, asses.unit, sex)) %>%
+  mutate(spat.agg = case_when(region == "Baltic.sea" ~ paste0(region,":AU-",asses.unit),
                              region == "Swedish.westcoast" ~ region, 
                              .default = region.gen)) %>%   ggplot() +
-  geom_bar(aes(count, sex, fill = region2), stat="identity", position = "stack") +
+  geom_bar(aes(ind.count, sex, fill = spat.agg), stat="identity", position = "stack") +
+  scale_fill_viridis_d() 
+
+# Number of individuals by suggested spatial region
+all.sallaa %>%
+  drop_na(river) %>%
+  summarise(ind.count = n(), .by = c(region.gen, region, asses.unit)) %>%
+  mutate(spat.agg = case_when(region == "Baltic.sea" ~ paste0(region,":AU-",asses.unit),
+                             region == "Swedish.westcoast" ~ region, 
+                             .default = region.gen)) %>%   ggplot() +
+  geom_bar(aes(ind.count, spat.agg), stat="identity", position = "stack") +
   scale_fill_viridis_d() 
 
 ```
@@ -616,17 +678,19 @@ Seven French individuals from 1974 and 1975 lacks river information.
 
 # Fecundity at length all data 
 all.salfec %>%
-  mutate(region2 = case_when(region == "Baltic.sea" ~ paste0(region,":AU-",asses.unit),
+  mutate(spat.agg = case_when(region == "Baltic.sea" ~ paste0(region,":AU-",asses.unit),
                              region == "Swedish.westcoast" ~ region, 
                              .default = region.gen)) %>%
-  ggplot(aes(length, n.eggs, color = region2)) +
+  ggplot(aes(length, n.eggs, color = spat.agg)) +
   geom_point() +
   scale_fill_viridis_d() +
   theme_light()
 
 # map
 plot_map_Euro +
-  geom_point(data = all.salfec %>% drop_na(lat,lon) %>% add_utm_columns(ll_names = c("lon", "lat"), utm_crs = 32633), aes(X*1000, Y*1000), size = 0.1, color = "deeppink3") 
+  geom_point(data = all.salfec %>% drop_na(lat,lon) %>% add_utm_columns(ll_names = c("lon", "lat"), utm_crs = 32633), aes(X*1000, Y*1000), size = 0.3, color = "deeppink3") 
+#ggsave("fec_map.png", scale = 0.8)
+
 # by river
 all.salfec %>%
   summarise(count = n(), .by = c(year, country, origin, river)) %>%
@@ -643,7 +707,7 @@ all.salfec %>%
 # by spat aggregation
 all.salfec %>%
   summarise(count = n(), .by = c(year, country, origin, region, region.gen, asses.unit)) %>%
-  mutate(region2 = case_when(region == "Baltic.sea" ~ paste0(region,":AU-",asses.unit),
+  mutate(spat.agg = case_when(region == "Baltic.sea" ~ paste0(region,":AU-",asses.unit),
                              region == "Swedish.westcoast" ~ region, 
                              .default = region.gen),
          Ind.count = as.factor(ifelse(count > 50, ">50",
@@ -651,7 +715,7 @@ all.salfec %>%
                                          ifelse(count > 10 & count <= 30, ">10",
                                          "<10")))),
          Ind.count = fct_reorder(Ind.count, count)) %>% 
-  ggplot(aes(year, region2, fill = Ind.count)) +
+  ggplot(aes(year, spat.agg, fill = Ind.count)) +
   geom_tile(color = "gray30") +
   scale_fill_viridis_d() +
   theme_light()
@@ -659,13 +723,52 @@ all.salfec %>%
 # Number of individuals fecundity 
 all.salfec %>%
   drop_na(river) %>%
-  summarise(count = n(), .by = c(region.gen, region, asses.unit)) %>%
-  mutate(region2 = case_when(region == "Baltic.sea" ~ paste0(region,":AU-",asses.unit),
+  summarise(count.ind = n(), .by = c(region.gen, region, asses.unit)) %>%
+  mutate(spat.agg = case_when(region == "Baltic.sea" ~ paste0(region,":AU-",asses.unit),
                              region == "Swedish.westcoast" ~ region, 
                              .default = region.gen)) %>%   
   ggplot() +
-  geom_bar(aes(count, region2), stat="identity", position = "stack")
+  geom_bar(aes(count.ind, spat.agg), stat="identity", position = "stack")
 
 
+```
+
+## 5. Build data sets and agregate by spatial aggregation
+
+```{r}
+# length at age
+salmon.laa <- all.sallaa %>%
+  mutate(spat.agg = case_when(region == "Baltic.sea" ~ paste0(region,".AU",asses.unit),
+                             region == "Swedish.westcoast" ~ region, 
+                             .default = region.gen))
+
+# aggregations for length at age
+salmon.agg.laa <- salmon.laa %>%
+  summarise(mean.length = mean(length), 
+            sd.length = sd(length), 
+            mean.age = mean(age.sea), 
+            sd.age = sd(age.sea),
+            .by = c(spat.agg, year))
+
+
+# fecundity
+salmon.fec <- all.salfec %>%
+  mutate(spat.agg = case_when(region == "Baltic.sea" ~ paste0(region,".AU",asses.unit),
+                             region == "Swedish.westcoast" ~ region, 
+                             .default = region.gen))
+str(salmon.agg.laa)
+str(salmon.fec)
+str(salmon.laa)
+
+```
+
+## 6. Save data
+
+```{r}
+saveRDS(salmon.laa, paste0(file = paste0(home,"/data/data-for-4-1/salmon-laa_",Sys.Date(),".RData")))
+saveRDS(salmon.agg.laa, paste0(file = paste0(home,"/data/data-for-4-1/salmon-agg-laa_",Sys.Date(),".RData")))
+saveRDS(salmon.fec, paste0(file = paste0(home,"/data/data-for-4-1/salmon-fec_",Sys.Date(),".RData")))
+
+# readRDS(paste0(home, "/data/data-for-4-1/salmon-laa_2025-02-24.RData"))
 ```
 
