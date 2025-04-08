@@ -28,7 +28,7 @@ Summaries of DCF data are available
 #| cache: false
 
 # Load libraries, install if needed
-pkgs <- c("tidyverse", "tidylog", "devtools","viridis", "patchwork", "rvest", "readxl","httr") 
+pkgs <- c("tidyverse", "tidylog", "devtools","viridis", "patchwork", "rvest", "readxl","httr","janitor") 
 
 if(length(setdiff(pkgs,rownames(installed.packages()))) > 0){
   
@@ -39,27 +39,27 @@ if(length(setdiff(pkgs,rownames(installed.packages()))) > 0){
 invisible(lapply(pkgs, library, character.only = T))
 
 options(ggplot2.continuous.colour = "viridis")
-theme_set(theme_grey()) # check why global theme option not working when rendering
+theme_set(theme_grey()) 
+
 devtools::source_url("https://raw.githubusercontent.com/VThunell/diasp-lht/main/R/functions/map-plot.R")
 
 # Set path
 home <- here::here()
 ```
 
-## Download files from DCF annual reports
-
+## Download files from DCF annual reports hompage
 https://dcf.ec.europa.eu/wps-and-ars/annual-reports_en
 
-Using
+Using inspiration from:
 https://rvest.tidyverse.org/articles/rvest.html
 https://webscraping-tures.github.io/files.html#downloading-files
 
 ```{r}
 # Reading the HTML page with read_html():
 
-# DCF_Ann_Reps <- read_html("https://dcf.ec.europa.eu/wps-and-ars/annual-reports_en")
+# DCF.Ann.Reps <- read_html("https://dcf.ec.europa.eu/wps-and-ars/annual-reports_en")
 # 
-# DCF_Ann_Reps_links <- DCF_Ann_Reps %>%
+# DCF.Ann.Reps.links <- DCF.Ann.Reps %>%
 #   html_nodes("a") %>% #https://rvest.tidyverse.org/articles/rvest.html
 #   html_attr(name="href") %>%
 #   as_tibble() %>%
@@ -68,20 +68,20 @@ https://webscraping-tures.github.io/files.html#downloading-files
 #   pull(value)
 # 
 # #To get content type from link
-# #GET(DCF_Ann_Reps_links[1])
+# #GET(DCF.Ann.Reps.links[1])
 # 
-# f_download_DCF <- function(link)  {
+# f.download.DCF <- function(link)  {
 #   
 #   download.file(link, destfile = paste0("/Users/vitl0001/Documents/Projects/DIASPARA/Incoming other files/DCF Annual Reports/", basename(link),".xlsx"))
 #   
 #   }
 # 
-# possdnld = possibly(.f = f_download_DCF, otherwise = NULL) #try download and store file otherwise return NULL
+# possdnld = possibly(.f = f.download.DCF, otherwise = NULL) #try download and store file otherwise return NULL
 # 
-# map(DCF_Ann_Reps_links, ~possdnld(.x) ) %>%
-#   map(\(x) f_download_DCF)
+# map(DCF.Ann.Reps.links, ~possdnld(.x) ) %>%
+#   map(\(x) f.download.DCF)
 
-# DCF_Ann_Reps_links %>%
+# DCF.Ann.Reps.links %>%
 #   map(\(x) download.file(x, destfile = paste0("/Users/vitl0001/Documents/Projects/DIASPARA/Incoming other files/DCF Annual Reports/", str_replace_all(x, regex("\\W+"), "_"),
                            #                    ".xlsx")))
 ```
@@ -90,127 +90,289 @@ https://webscraping-tures.github.io/files.html#downloading-files
 
 The not imported files are either not tables (pdfs) or table 2.2 does not exist. The format chnaged between 2021 and 2022, the corresponding sheet is "Table1C Sampling intensity" for years pre 2022.
 
-### Import Table 2.2. Biol variables, i.e. post 2022
-```{r}
-#| output: false
+### Path for importing files
 
+```{r}
 path <- paste0("/Users/vitl0001/Documents/Projects/DIASPARA/Incoming other files/DCF Annual Reports/")
 filepaths <- list.files(path, full.names=TRUE)
 #filepaths <- filepaths[!grepl("^~\\$", filepaths)] # FIX REGEX?? ensure any temporrary files are excluded
 
 # 100 files downloaded out of 103 links
 # length(filepaths) 
-# length(DCF_Ann_Reps_links)
+# length(DCF.Ann.Reps.links)
 
-f_DCF_bind22 <- function(file)  {
+```
+
+### Import from new table format, i.e. post 2022
+
+#### Table 2.2. Planning of sampling for biological variables
+```{r}
+#| output: false
+
+f.DCF.bind22 <- function(file)  {
   
   sheetnum = which(str_detect(excel_sheets(file),"2.2"))
   
-  read_excel(file, sheet = sheetnum, skip = 1) %>%
-    filter(Species %in% c("Salmo salar", "Anguilla anguilla", "Salmo trutta"))
+  read_excel(file, sheet = sheetnum, skip = 1) %>% # skip first row
+    filter(Species %in% c("Salmo salar", "Anguilla anguilla", "Salmo trutta")) # this also removes the row under the headers
   
   }
 
-possxls22 = possibly(.f = f_DCF_bind22, otherwise = NULL) # NULL if table 2.2. doesnt exist
+possxls22 = possibly(.f = f.DCF.bind22, otherwise = NULL) # NULL if table 2.2. doesnt exist
 
-DCF_tables_22 = map(filepaths, ~possxls22(.x) ) %>%
+DCF.tables.22 = map(filepaths, ~possxls22(.x) ) %>%
   setNames(basename(filepaths))
 
-diadrom_DCF_22 <- DCF_tables_22 %>%
+diadrom.DCF.22 <- DCF.tables.22 %>%
   keep(~!is.null(.x) ) %>%
   keep(~nrow(.x) > 0) %>%
   map(~mutate_if(.x, is.numeric, as.character)) %>% # make all numeric as types  differ between the sheets
   list_rbind()
 
 ```
-### Import "Table1C Sampling intensity" for years pre 2022.
+#### Table 2.3. Diadromous species data collection in freshwater
 
 ```{r}
-#| warning: true
+#| output: false
+
+f_DCF_bind23 <- function(file)  {
+  
+  sheetnum = which(str_detect(excel_sheets(file),"2.3"))
+  
+  read_excel(file, sheet = sheetnum, skip = 1) %>% # skip first row
+       slice(-1) # remove the row under the headers whithout data
+  
+  }
+
+possxls.23 <- possibly(.f = f_DCF_bind23, otherwise = NULL) # NULL if table 2.3 does not exist
+DCF.tables.23 <- map(filepaths, ~possxls.23(.x) ) %>%
+  setNames(basename(filepaths))
+
+diadrom.DCF.23 <- DCF.tables.23 %>%
+  keep(~!is.null(.x) ) %>%
+  keep(~nrow(.x) > 0) %>%
+  map(~mutate_if(.x, is.numeric, as.character)) %>% # make all numeric as types  differ between the sheets
+  list_rbind()
+
+```
+### Import from old table format, i.e. years pre 2022.
+
+#### Table 1C: Sampling intensity for biological variables
+
+```{r}
 #| output: false
 
 f_DCF_bind1C <- function(file)  {
   
   sheetnum = which(str_detect(excel_sheets(file),"1C"))
   
-  read_excel(file, sheet = sheetnum, skip = 3) %>%
-    filter(Species %in% c("Salmo salar", "Anguilla anguilla", "Salmo trutta"))
+  read_excel(file, sheet = sheetnum, skip = 3) %>% # skip 3 rows
+    filter(Species %in% c("Salmo salar", "Anguilla anguilla", "Salmo trutta")) 
   
   }
 
-possxls_1C = possibly(.f = f_DCF_bind1C, otherwise = NULL) # NULL if table 2.2. doesnt exist
-DCF_tables_1C = map(filepaths, ~possxls_1C(.x) ) %>%
+possxls.1C = possibly(.f = f_DCF_bind1C, otherwise = NULL) # NULL if table 2.2. doesnt exist
+DCF.tables.1C = map(filepaths, ~possxls.1C(.x) ) %>%
   setNames(basename(filepaths))
 
-diadrom_DCF_1C <- DCF_tables_1C %>%
+diadrom.DCF.1C <- DCF.tables.1C %>%
   keep(~!is.null(.x) ) %>%
   keep(~nrow(.x) > 0) %>%
   map(~mutate_if(.x, is.numeric, as.character)) %>% # make all numeric as types  differ between the sheets
   list_rbind()
 
-
 ```
-# Plot
+
+#### Table1E Anadromous catadromous for years pre 2022.
 
 ```{r}
+#| output: false
 
-unique(diadrom_DCF_22$`Biological variable`)
-unique(diadrom_DCF_1C$Variables)
+f_DCF_bind1E <- function(file)  {
+  
+  sheetnum = which(str_detect(excel_sheets(file),"1E"))
+  
+  read_excel(file, sheet = sheetnum, skip = 3)# %>% # skip 3 rows
+    
+  }
 
-diadrom_DCF_22 %>%
-  rename(ach_n_ind = `Achieved number of individuals measured at national level`,
-         biol_var = `Biological variable`,
+possxls.1E <- possibly(.f = f_DCF_bind1E, otherwise = NULL) # NULL if table 2.2. doesnt exist
+DCF.tables.1E <- map(filepaths, ~possxls.1E(.x) ) %>%
+  setNames(basename(filepaths))
+
+diadrom.DCF.1E <- DCF.tables.1E %>%
+  keep(~!is.null(.x) ) %>%
+  keep(~nrow(.x) > 0) %>%
+  map(~mutate_if(.x, is.numeric, as.character)) %>% # make all numeric as types  differ between the sheets
+  list_rbind()
+
+```
+## Which reports are not imported?
+```{r}
+no.import22 <- DCF.tables.22 %>% # Where there's no table 2.2. 
+  keep(~is.null(.x) ) %>%
+  names()
+no.import23 <- DCF.tables.23 %>% # Where there's no table 2.3. 
+  keep(~is.null(.x) ) %>%
+  names() 
+no.import1C <- DCF.tables.1C %>% # Where there's no table 1C. 
+  keep(~is.null(.x) ) %>%
+  names()
+no.import1E <- DCF.tables.1E %>% # Where there's no table 1C. 
+  keep(~is.null(.x) ) %>%
+  names()
+
+# the NULL files where there is no table 2.2 or 1C
+no.import22 %>%
+  keep(~.x %in% no.import1C) %>%
+  str_subset(fixed("~$"), negate = TRUE) # subset the reporst that are not open files (which creates a copy of the file with "~$" in the name)
+  
+# the NULL files where there is no table or 2.3 or 1E
+no.import23 %>%
+  keep(~.x %in% no.import1E) %>%
+  str_subset(fixed("~$"), negate = TRUE) # subset the reporst that are not open files 
+# I guess these are reports which countries that dont have diadromous fish managed through the CFP??
+```
+
+## Plot
+
+### Plot sheets 2.2 and 1C
+```{r}
+
+# What are the biological variables in the two sheets
+c(diadrom.DCF.1C$Variables,diadrom.DCF.22$`Biological variable`) %>%
+  unique()
+
+diadrom.DCF.22 %>%
+  rename(ach.n.ind = `Achieved number of individuals measured at national level`,
+         biol.var = `Biological variable`,
          country = MS,
          year =`Implementation year`) %>%
-  bind_rows(diadrom_DCF_1C %>%
-              rename(ach_n_ind = `Achieved number of individuals measured at the national level`,
-                     biol_var = `Variables`,
+  select(ach.n.ind, biol.var, country, year, Species) %>%
+  bind_rows(diadrom.DCF.1C %>%
+              rename(ach.n.ind = `Achieved number of individuals measured at the national level`,
+                     biol.var = `Variables`,
                      country = MS,
                      year =`Sampling year`) %>%
-              mutate(biol_var = case_when(biol_var %in% c("Age","age") ~ "Age",
-                                          biol_var %in% c("Length","length","lenght") ~ "Length",
-                                          biol_var %in% c("Weight","weight") ~ "Weight",
-                                          biol_var %in% c("Sex ratio","sex ratio") ~ "Sex ratio",
-                                          biol_var %in% c("Sexual maturity","sexual maturity","maturity","Maturity") ~ "Maturity",
-                                          biol_var %in% c("Sex","sex") ~ "Sex",
-                                          biol_var == "NA" ~ NA,
-                                          .default = biol_var))) %>%
-  mutate(ach_n_ind = as.numeric(if_else(ach_n_ind == "NA", NA, ach_n_ind)),
-         biol_var = as.factor(biol_var)) %>%
-  drop_na(biol_var) %>%
-  filter(ach_n_ind < 2000) %>%
+              select(ach.n.ind, biol.var, country, year, Species) %>%
+              mutate(biol.var = case_when(biol.var %in% c("Age","age") ~ "Age",
+                                          biol.var %in% c("Length","length","lenght") ~ "Length",
+                                          biol.var %in% c("Weight","weight") ~ "Weight",
+                                          biol.var %in% c("Sex ratio","sex ratio") ~ "Sex ratio",
+                                          biol.var %in% c("Sexual maturity","sexual maturity","maturity","Maturity") ~ "Maturity",
+                                          biol.var %in% c("Sex","sex") ~ "Sex",
+                                          biol.var == "NA" ~ NA,
+                                          .default = biol.var))) %>%
+  mutate(ach.n.ind = as.numeric(if_else(ach.n.ind == "NA", NA, ach.n.ind)),
+         biol.var = as.factor(biol.var)) %>%
+  drop_na(biol.var) %>%
+  filter(ach.n.ind < 2000) %>%
   ggplot() +
-  geom_tile(aes(year, country, fill = ach_n_ind)) +
-  facet_grid(Species ~ biol_var) +
+  geom_tile(aes(year, country, fill = ach.n.ind)) +
+  facet_grid(Species ~ biol.var) +
   scale_fill_viridis() +
   theme(axis.text.x = element_text(angle = 90),
-        axis.text = element_text(size=6))
-
-
-  
+        axis.text = element_text(size=6)) +
+  labs(title = "Achieved number of individuals measured at national level", subtitle = "Table 2.2. & 1C - biological variables")
 ```
+
+### Plot sheets 2.3 and 1E
 ```{r}
-no_import1C <- DCF_tables_1C %>% # Where theres no table 1C. 
-  keep(~is.null(.x) ) %>%
-  names()
-no_import22 <- DCF_tables_22 %>% # Where theres no table 2.2. 
-  keep(~is.null(.x) ) %>%
-  names()
+# Plot sheets 2.3 and 1E
+# achieved units by Unit category needs some work and priority
+c(diadrom.DCF.1E$Unit,diadrom.DCF.23$Unit) %>%
+  unique() %>% length()
+# same with life stage
+c(diadrom.DCF.1E$`Life stage`,diadrom.DCF.23$`Life stage`) %>%
+  unique() %>% length()
 
-# the NULL files whwre there is no table 2.2 or 1C. I guess countries that dont have fish managed through the CFP
-basename(no_import22[which(no_import22 %in% no_import1C)])
+# THIS BELOW NEEDS TO BE REVISED!! FIXING CHARACTER TO NUMERICS POPERLY
+diadrom.DCF.23 %>%
+  rename(ach.n.unit = `Achieved number of units`,
+         #Diad.var = `Diadromous variable`,
+         life.stage = `Life stage`,
+         #unit = Unit,
+         country = MS,
+         year =`Implementation year`) %>%
+  select(ach.n.unit, life.stage, country, year, Species) %>%
+  bind_rows(diadrom.DCF.1E %>%
+              rename(ach.n.unit = `Achieved numbers`,
+                     #Diad.var = `Diadromous variable`,
+                     life.stage = `Life stage`,
+                     country = MS,
+                     unit = Unit,
+                     year =`Sampling period`) %>%
+              select(ach.n.unit, life.stage, country, year, Species)) %>%
+  mutate(life.stage = make_clean_names(life.stage, allow_dupes = TRUE),
+         life.stage = case_when(life.stage %in% c("silver","silver_eel","silver_eels","silver_eel") ~ "silver",
+                                life.stage %in% c("yellow_silver","yellow_silver_eel","yellow_silver","silver_eel_yellow_eel","yellow_eel_and_silver_eel", "yellow_eel_silver_eel") ~ "yellow_silver",
+                                life.stage %in% c("x","na","-", "n_a","not_pertinent", "1_15", "1_year", "x1_2_y_1") ~ NA,
+                                life.stage %in% c("yellow", "yellow_eel","yellow_eels", "recruits_yellow", "recruits_yellow_ss", "yellow_eel_ss") ~ "yellow",
+                                life.stage %in% c("glass_eels","glass_eel","glass_eel_recruitment","recruits_glass_eel","glass_eels") ~ "glass",
+                                life.stage %in% c("Sex","sex") ~ "Sex",
+                                life.stage %in% c("all") ~ "All",
+                                life.stage %in% c("Sex","sex") ~ "Sex",
+                                life.stage %in% c("adult_spawning_salmon") ~ "spawning_adult",
+                                 .default = life.stage),
+         life.stage = as.factor(life.stage)) %>%
+  mutate(ach.n.unit = case_when(ach.n.unit %in% c("N/A","NA","na", "not applicable","census","hundreds", " ") ~ NA,
+                                .default = ach.n.unit),
+         ach.n.unit.num = parse_number(ach.n.unit)) %>%
+  mutate(country = if_else(country == "Spain", "ESP", country)) %>%
+  drop_na(life.stage) %>%
+  #filter(ach.n.ind < 2000) %>%
+  filter(Species == "Anguilla anguilla") %>%
+  ggplot() +
+  geom_tile(aes(year, country, fill = ach.n.unit.num)) +
+  facet_grid( ~life.stage) +
+  scale_fill_viridis() +
+  theme(axis.text.x = element_text(angle = 90),
+        axis.text = element_text(size=6)) +
+    labs(title = "Eel achieved number of individuals measured at national level", subtitle = "Table 2.3. & 1E  - Diadromous")
+
+# Salmon
+diadrom.DCF.23 %>%
+  rename(ach.n.unit = `Achieved number of units`,
+         #Diad.var = `Diadromous variable`,
+         life.stage = `Life stage`,
+         #unit = Unit,
+         country = MS,
+         year =`Implementation year`) %>%
+  select(ach.n.unit, life.stage, country, year, Species) %>%
+  bind_rows(diadrom.DCF.1E %>%
+              rename(ach.n.unit = `Achieved numbers`,
+                     #Diad_var = `Diadromous variable`,
+                     life.stage = `Life stage`,
+                     country = MS,
+                     unit = Unit,
+                     year =`Sampling period`) %>%
+              select(ach.n.unit, life.stage, country, year, Species)) %>%
+  mutate(life.stage = make_clean_names(life.stage, allow_dupes = TRUE),
+         life.stage = case_when(life.stage %in% c("silver","silver_eel","silver_eels","silver_eel") ~ "silver",
+                                life.stage %in% c("yellow_silver","yellow_silver_eel","yellow_silver","silver_eel_yellow_eel","yellow_eel_and_silver_eel", "yellow_eel_silver_eel") ~ "yellow_silver",
+                                life.stage %in% c("x","na","-", "n_a","not_pertinent", "1_15", "1_year", "x1_2_y_1") ~ NA,
+                                life.stage %in% c("yellow", "yellow_eel","yellow_eels", "recruits_yellow", "recruits_yellow_ss", "yellow_eel_ss") ~ "yellow",
+                                life.stage %in% c("glass_eels","glass_eel","glass_eel_recruitment","recruits_glass_eel","glass_eels") ~ "glass",
+                                life.stage %in% c("Sex","sex") ~ "Sex",
+                                life.stage %in% c("all") ~ "All",
+                                life.stage %in% c("Sex","sex") ~ "Sex",
+                                life.stage %in% c("adult_spawning_salmon") ~ "spawning_adult",
+                                 .default = life.stage),
+         life.stage = as.factor(life.stage)) %>%
+  mutate(ach.n.unit = case_when(ach.n.unit %in% c("N/A","NA","na", "not applicable","census","hundreds", " ") ~ NA,
+                                .default = ach.n.unit),
+         ach.n.unit.num = parse_number(ach.n.unit)) %>%
+  mutate(country = if_else(country == "Spain", "ESP", country)) %>%
+  drop_na(life.stage) %>%
+  #filter(ach.n.ind < 2000) %>%
+  filter(Species == "Salmo salar") %>%
+  ggplot() +
+  geom_tile(aes(year, country, fill = ach.n.unit.num)) +
+  facet_grid( ~life.stage) +
+  scale_fill_viridis() +
+  theme(axis.text.x = element_text(angle = 90),
+        axis.text = element_text(size=6)) +
+    labs(title = "Salmon achieved number of individuals measured at national level", subtitle = "Table 2.3. & 1E  - Diadromous")
+
 ```
-
-## Next Table 2.3
-
-What about https://dcf.ec.europa.eu/guidelines_en ...
-
-Requesting DCF data
-
-The data collected under the DCF can be used for scientific purposes by various end users. To obtain the data, you should fill in a data request template (.docx) and send it to MARE-DATACOLLECTIONFRAMEWORK[at]ec[dot]europa[dot]eu.
-
-```{r}
-
-```
-
 

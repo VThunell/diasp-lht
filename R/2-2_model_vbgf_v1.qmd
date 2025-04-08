@@ -1,0 +1,471 @@
+---
+title: "Salmon VBGF model v1" 
+author: "Viktor Thunell" 
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+format: 
+  html:
+    page-layout: full
+    embed-resources: true
+knitr: 
+  opts_chunk:
+    fig.align: center
+    out-width: 80%
+editor: source
+execute: 
+  echo: false
+  eval: true
+  cache: true
+---
+
+## Load libraries
+```{r libs}
+#| message: false
+#| warning: false
+#| cache: false
+
+# Load libraries, install if needed
+pkgs <- c("tidyverse", "tidylog", "devtools","viridis","nls.multstart", "broom", "patchwork", "rjags", "coda", "boot", "tidybayes","bayesplot")
+
+if(length(setdiff(pkgs,rownames(installed.packages()))) > 0){
+    install.packages(setdiff(pkgs, rownames(installed.packages())), dependencies = T)
+  }
+
+invisible(lapply(pkgs, library, character.only = T))
+
+options(ggplot2.continuous.colour = "viridis")
+theme_set(theme_light()) # check why global theme option not working when rendering
+# Set path
+
+home <- here::here()
+```
+
+## Read data
+```{r}
+#| message: false
+#| warning: false
+#| cache: false
+
+sallaa <- readRDS(file = paste0(home,"/data/data-for-4-1/salmon-laa_2025-03-07.RData"))
+  
+# hists of sea age and length
+sallaa %>% 
+  ggplot() +
+  geom_histogram(aes(x = age.sea)) +
+
+sallaa %>% 
+  ggplot() +
+  geom_histogram(aes(x = length)) +
+  
+sallaa %>% 
+  ggplot() +
+  geom_histogram(aes(x = length)) +
+  facet_wrap(~age.sea, scales = "free")
+```
+
+$$Y_i~ \sim Normal(\mu_i, \tau)$$
+$$\mu_i ~  \sim L_{inf}*(1-e^{-k*age_{i}})$$
+$$\tau = 1/\sigma^2$$
+$$\sigma \sim uniform(0, 0.001)$$
+$$L_{inf}~ \sim Normal(0, 0.001)$$
+$$k ~ \sim Normal(0, 0.001)$$
+
+## Model vbgf 1
+
+```{r}
+
+vbgf_model_1 <- "model{
+  # Likelihood model
+    
+  for(i in 1:nobs){
+    
+    length[i] ~ dnorm(mu[i], tau)
+    
+    mu[i] <- Linf*(1-exp(-k*age.sea[i]))
+    
+    }
+  
+  # Prior for Linf, k and sigma
+  
+  tau <- 1/sig^2
+  sig ~ dunif(0, 200)
+  k ~ dnorm(0, 0.001)
+  Linf ~ dnorm(0, 0.001)
+
+}"
+
+sallaa.samp <- sallaa %>% slice_sample(n = 5000)
+data = c(sallaa.samp %>% select(age.sea, length, spat.agg) %>% as.list(), 
+         list(nobs = nrow(sallaa.samp)))
+line_inits <- list(list("k" = 0.5, "Linf"= 500),
+                   list("k" = 2, "Linf"= 1500))
+
+# Build the model    
+vbgf_jags <- jags.model(textConnection(vbgf_model_1), 
+    data = data,
+    n.chains = 2,
+    inits = line_inits)
+    # inits = list( # hashed to use generated itis by jags () "JAGS user manual V 4.3.0 (section 3.3.1) states that "the value selected by the function is usually the mean, median or mode of the distribution of the stochastic node (https://nandinidendukuri.com/blogposts/2023-10-12-initial-values-in-rjags/)"
+  
+
+# mcmc burn-in
+burn.in=10000
+update(vbgf_jags, n.iter=burn.in)
+
+# produce more samples and a mcmc.list object
+iters=5000
+n.thin=1
+samples = coda.samples(vbgf_jags, 
+                       variable.names = c("Linf","k"),
+                       n.iter = iters,
+                       thin = n.thin)
+
+# summarise and look at the mcmc trace
+summary(samples) # X is the number of female individuals in the data (n_fem)
+mcmc_trace(samples, pars = c("k","Linf")) +
+  theme_light()
+
+gather_draws(samples, c(k,Linf)) %>% 
+  filter(.chain == 1) %>%
+  ggplot() + 
+  geom_density(aes(x = .value, color = factor(.variable))) + # age parameter i
+  facet_wrap(~.variable, scales = "free") +
+  theme_light() 
+
+vgbf_pars <- tidy_draws(samples, c(k,Linf)) %>% 
+  median_qi()
+
+preds <- data.frame(age = seq(0,7, by = 0.1)) %>%
+  mutate(length = vgbf_pars$Linf*(1-exp(-vgbf_pars$k*age)))
+  
+preds %>%
+  ggplot() +
+  geom_line(aes(x = age, y = length)) +
+  geom_point(data = sallaa.samp, aes(age.sea,length)) 
+
+```
+
+## Model vbgf 2
+
+Spatial hierarchical.
+
+```{r}
+
+vbgf_model_2 <- "model{
+  # Likelihood model
+    
+  for(i in 1:nobs){
+    
+    length[i] ~ dnorm(mu[i], tau)
+    
+    mu[i] <- Linf[spat.agg[i]]*(1-exp(-k[spat.agg[i]]*age.sea[i]))
+    
+    }
+    
+    for(j in 1:nogr){
+    
+    Linf[j] ~ dnorm(mu.li, tau.li)
+    k[j] ~ dnorm(mu.k, tau.k)
+    
+    }
+    
+    # Prior for Linf and k
+  
+    mu.li ~ dnorm(0, 0.001)
+    sig.li ~ dunif(0, 100)
+    tau.li <- 1/sig.li^2
+    #tau.li <- dgamma(0.001,0.001) # or with a and b
+    mu.k ~ dnorm(0, 0.001)
+    sig.k ~ dunif(0, 1)
+    tau.k <- 1/sig.k^2
+    tau <- 1/sig^2
+    sig ~ dunif(0, 150)
+    
+}"
+
+sallaa.samp <- sallaa %>% slice_sample(n = 5000) %>%
+  mutate(spat.agg = as.factor(spat.agg))
+data = c(sallaa.samp %>% select(age.sea, length, spat.agg) %>% as.list(), 
+         list(nobs = nrow(sallaa.samp), nogr = length(unique(sallaa.samp$spat.agg))))
+line_inits <- list(list("mu.k" = 2, "mu.li"= 1500), # letting jags choose initial values for other params than mu.k and mu.li
+                   list("mu.k" = 0.5, "mu.li"= 2500))
+
+# Build the model
+vbgf_jags <- jags.model(textConnection(vbgf_model_2), 
+    data = data,
+    n.chains = 2,
+    inits = line_inits
+    )
+    # inits = list( # hashed to use generated itis by jags () "JAGS user manual V 4.3.0 (section 3.3.1) states that "the value selected by the function is usually the mean, median or mode of the distribution of the stochastic node (https://nandinidendukuri.com/blogposts/2023-10-12-initial-values-in-rjags/)"
+
+# mcmc burn-in
+burn.in=1000
+update(vbgf_jags, n.iter=burn.in)
+
+# produce more samples and a mcmc.list object
+iters=5000
+n.thin=1
+samples = coda.samples(vbgf_jags, 
+                       variable.names = c("k", "Linf", "tau", "tau.li", "tau.k"),
+                       n.iter = iters,
+                       thin = n.thin)
+
+# summarise and look at the mcmc trace
+summary(samples) # X is the number of female individuals in the data (n_fem)
+mcmc_trace(samples) + theme_light()
+
+samples %>%
+  gather_draws(k[j], Linf[j], tau, tau.li, tau.k) %>% 
+  ggplot() + 
+  geom_density(aes(x = .value, color = factor(j))) + # age parameter i
+  facet_wrap(~.variable, scales = "free") +
+  theme_light() 
+
+preds <- samples %>%
+  spread_draws(k[j], Linf[j]) %>% 
+  median_qi() %>%
+  left_join(expand_grid(age = seq(0,7, by = 0.1), unit = unique(sallaa.samp$spat.agg)) %>%
+              mutate(j = rep(1:11, 71)), by = "j") %>%
+  mutate(length = Linf*(1-exp(-k*age)), .by = unit)
+
+preds %>%
+  ggplot() +
+  geom_line(aes(x = age, y = length, color = unit)) +
+  geom_point(data = sallaa.samp, aes(age.sea,length, color = spat.agg), alpha = 0.5, size = 0.6) 
+
+samples %>%
+spread_draws(Linf[j]) %>%
+  ggplot(aes(x = Linf, y = j)) +
+  stat_pointinterval()
+
+```
+
+## Model vbgf 2b
+
+Sex hierarchical.
+
+```{r}
+
+vbgf_model_2b <- "model{
+  # Likelihood model
+    
+  for(i in 1:nobs){
+    
+    length[i] ~ dnorm(mu[i], tau[i])
+    
+    mu[i] <- Linf[sex[i]]*(1-exp(-k[sex[i]]*age.sea[i]))
+    tau[i] <- 1/sigma[sex[i]]^2
+    
+    }
+    
+    for(j in 1:nosex){
+    
+    Linf[j] ~ dnorm(mu.li, tau.li)
+    k[j] ~ dnorm(mu.k, tau.k)
+    sigma[j] ~ dunif(0, 150)
+    
+    }
+    
+    # Prior for Linf and k
+  
+    mu.li ~ dnorm(0, 0.001)
+    sig.li ~ dunif(0, 100)
+    tau.li <- 1/sig.li^2
+    #tau.li <- dgamma(0.001,0.001) # or with a and b
+    mu.k ~ dnorm(0, 0.001)
+    sig.k ~ dunif(0, 1)
+    tau.k <- 1/sig.k^2
+    tau <- 1/sig^2
+    sig ~ dunif(0, 150)
+    
+}"
+
+sallaa.samp <- sallaa %>% slice_sample(n = 5000) %>%
+  drop_na(sex) %>%
+  mutate(sex = as.factor(sex))
+data = c(sallaa.samp %>% select(age.sea, length, sex) %>% as.list(), 
+         list(nobs = nrow(sallaa.samp), nosex = length(unique(sallaa.samp$sex))))
+line_inits <- list(list("mu.k" = 2, "mu.li"= 1500), # letting jags choose initial values for other params than mu.k and mu.li
+                   list("mu.k" = 0.5, "mu.li"= 2500))
+
+# Build the model
+vbgf_jags <- jags.model(textConnection(vbgf_model_2b), 
+    data = data,
+    n.chains = 2,
+    inits = line_inits
+    )
+    # inits = list( # hashed to use generated itis by jags () "JAGS user manual V 4.3.0 (section 3.3.1) states that "the value selected by the function is usually the mean, median or mode of the distribution of the stochastic node (https://nandinidendukuri.com/blogposts/2023-10-12-initial-values-in-rjags/)"
+
+# mcmc burn-in
+burn.in=1000
+update(vbgf_jags, n.iter=burn.in)
+
+# produce more samples and a mcmc.list object
+iters=5000
+n.thin=1
+samples = coda.samples(vbgf_jags, 
+                       variable.names = c("k", "Linf", "tau", "tau.li", "tau.k"),
+                       n.iter = iters,
+                       thin = n.thin)
+
+# summarise and look at the mcmc trace
+summary(samples) # X is the number of female individuals in the data (n_fem)
+mcmc_trace(samples) + theme_light()
+
+samples %>%
+  gather_draws(k[j], Linf[j], tau, tau.li, tau.k) %>% 
+  ggplot() + 
+  geom_density(aes(x = .value, color = factor(j))) + # age parameter i
+  facet_wrap(~.variable, scales = "free") +
+  theme_light() 
+
+preds <- samples %>%
+  spread_draws(k[j], Linf[j]) %>% 
+  median_hdi() %>%
+  left_join(expand_grid(age = seq(0,7, by = 0.1), sex = unique(sallaa.samp$sex)) %>%
+              mutate(j = rep(1:2, 71)), by = "j") %>% # f=1
+  mutate(length = Linf*(1-exp(-k*age)), 
+         length.up = Linf.upper*(1-exp(-k.upper*age)), 
+         length.low = Linf.lower*(1-exp(-k.lower*age)), 
+         .by = sex)
+
+preds %>%
+  ggplot() +
+  stat_pointinterval(x = age, y = length)
+  geom_line(aes(x = age, y = length, color = sex)) +
+  geom_bar(data = preds %>% 
+             aes(x = age, ymin = length.low, ymax = length.up, color = sex), alpha = 0.2) +
+  geom_point(data = sallaa.samp, aes(age.sea, length, color = factor(sex)), alpha = 0.5, size = 0.6) 
+
+# samples %>%
+# spread_draws(Linf[j]) %>%
+#   ggplot(aes(x = Linf, y = j)) +
+#   stat_pointinterval()
+
+```
+
+## Model vbgf 3
+
+Spatial and sex hierarchical
+
+```{r}
+
+vbgf_model_3 <- "model{
+  # Likelihood model
+    
+  for(i in nobs){
+    
+    length[i] ~ dnorm(mu[i], tau)
+    mu[i] <- Linf[sex[i]]*(1-exp(-k[sex[i]]*age.sea[i]))
+
+    }
+    
+    for(j in 1:nosex){
+    
+    Linf[j] ~ dnorm(mu.l[spat.agg[j]], tau.l)
+    k[j] ~ dnorm(mu.k[spat.agg[j]], tau.k)
+    
+    }
+    
+    for(m in 1:nogr){
+    
+    mu.l[m] ~ dnorm(mu.ls, tau.ls)
+    mu.k[m] ~ dnorm(mu.ks, tau.ks)
+    
+    }
+    # Prior for Linf and k
+  
+    mu.ls ~ dnorm(1500, 0.001)
+    mu.ks ~ dnorm(2, 0.001)
+    tau.ls <- 1/sig.ls^2
+    tau.ks <- 1/sig.ks^2
+    sig.ls ~ dunif(0, 100)
+    sig.ks ~ dunif(0, 1)
+    sig.k ~ dunif(0, 1)
+    tau.k <- 1/sig.k^2
+    sig.l ~ dunif(0, 100)
+    tau.l <- 1/sig.l^2
+    sig ~ dunif(0, 100)
+    tau <- 1/sig^2
+
+    # Intilialise latent variables
+    
+}"
+
+
+sallaa.samp <- sallaa %>% 
+  slice_sample(n = 10000) %>%
+  drop_na(sex) %>%
+  mutate(spat.agg = as.factor(spat.agg),
+         sex = as.factor(sex))
+
+no.spat.units <- length(unique(sallaa.samp$spat.agg))
+data = c(sallaa.samp %>% select(age.sea, length, spat.agg, sex) %>% as.list(), 
+         list(nobs = nrow(sallaa.samp), nogr = no.spat.units, nosex = 2))
+line_inits <- list(list(),)
+                   # list(#"mu.ls" = rep(2500, no.spat.units), # spatial units
+                   #      #"mu.ks" = rep(0.5, no.spat.units), # spatial units
+                   #      # "tau.ls" = 0,
+                   #      # "tau.ks" = 0,
+                   #      # "sig.ls" = 0,
+                   #      # "sig.ks" = 0
+                   #      # "sig.k" = 0,
+                   #      # "tau.k" = 0,
+                   #      # "sig.l" =  0,
+                   #      # "tau.l" = 0,
+                   #      # "sig" = 0,
+                   #      # "tau" = 0,
+                   #      "mu.l" = rep(2500, 2), # 2 sexes
+                   #      "mu.k" = rep(0.5, 2))) # 2 sexes
+
+# Build the model
+vbgf_jags3 <- jags.model(textConnection(vbgf_model_3), 
+    data = data,
+    n.chains = 1,
+    #inits = line_inits
+    )
+    # inits = list( # hashed to use generated itis by jags () "JAGS user manual V 4.3.0 (section 3.3.1) states that "the value selected by the function is usually the mean, median or mode of the distribution of the stochastic node (https://nandinidendukuri.com/blogposts/2023-10-12-initial-values-in-rjags/)"
+  
+
+# mcmc burn-in
+burn.in=1000
+update(vbgf_jags3, n.iter=burn.in)
+
+# produce more samples and a mcmc.list object
+iters=5000
+n.thin=1
+samples = coda.samples(vbgf_jags3, 
+                       variable.names = c("k", "Linf", "mu.l", "mu.k"), 
+                       n.iter = iters,
+                       thin = n.thin)
+
+# summarise and look at the mcmc trace
+summary(samples) # X is the number of female individuals in the data (n_fem)
+mcmc_trace(samples) + theme_light()
+
+samples %>%
+  gather_draws(k[j], Linf[j]) %>% 
+  #filter(j == ) %>%
+  ggplot() + 
+  geom_density(aes(x = .value, color = factor(j))) +
+  facet_wrap(~.variable, scales = "free") +
+  theme_light() 
+
+preds <- samples %>%
+  spread_draws(k[j], Linf[j]) %>% 
+  median_qi() %>%
+  left_join(expand_grid(sex = unique(sallaa.samp$sex), age = seq(0,7, by = 0.1), unit = unique(sallaa.samp$spat.agg)) %>%
+              mutate(j = rep(1:11, 142)), by = "j") %>%
+  mutate(length = Linf*(1-exp(-k*age)), .by = c(sex,unit))
+
+preds %>%
+  ggplot() +
+  geom_line(aes(x = age, y = length, color = factor(sex))) 
+  #geom_point(data = sallaa.samp, aes(age.sea,length, color = spat.agg), alpha = 0.5, size = 0.6) +
+  facet_wrap(~unit)
+
+samples %>%
+spread_draws(Linf[j]) %>%
+  ggplot(aes(x = Linf, y = j)) +
+  stat_pointinterval()
+
+```
