@@ -5,7 +5,7 @@ library(ggsidekick)
 # library(rnaturalearth)
 # library(rnaturalearthdata)
 
-theme_set(theme_sleek())
+theme_set(theme_light())
 
 sf::sf_use_s2(FALSE)
 
@@ -28,7 +28,7 @@ euro_map_proj <- sf::st_transform(euro_map, crs = utm_zone33)
 
 # Define plotting theme for facet_wrap map with years
 theme_facet_map <- function(base_size = 11, base_family = "") {
-  theme_sleek(base_size = base_size, base_family = "") +
+  theme_light(base_size = base_size, base_family = "") +
     theme(
       legend.direction = "horizontal",
       legend.margin = margin(1, 1, 1, 1),
@@ -58,7 +58,7 @@ plot_map_Euro <-
   ylim(st_bbox(sfc_tr)$ymin, st_bbox(sfc_tr)$ymax) +
   labs(x = "Longitude", y = "Latitude") +
   geom_sf(size = 0.3, color = "gray80") + 
-  theme_sleek() +
+  theme_light() +
   guides(colour = guide_colorbar(title.position = "top", title.hjust = 0.5),
          fill = guide_colorbar(title.position = "top", title.hjust = 0.5)) +
   NULL
@@ -69,7 +69,7 @@ plot_map_Nord <-
   ylim(st_bbox(sfc_tr)$ymin+2000000, st_bbox(sfc_tr)$ymax-200000) +
   labs(x = "Longitude", y = "Latitude") +
   geom_sf(size = 0.3, color = "gray80") + 
-  theme_sleek() +
+  theme_light() +
   guides(colour = guide_colorbar(title.position = "top", title.hjust = 0.5),
          fill = guide_colorbar(title.position = "top", title.hjust = 0.5)) +
   NULL
