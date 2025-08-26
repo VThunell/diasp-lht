@@ -1,0 +1,885 @@
+---
+title: "Salmon VBGF model v1 with NIMBLE" 
+author: "Viktor Thunell" 
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+format: 
+  html:
+    code-fold: true
+    code-summary: "Show code"
+    page-layout: full
+    embed-resources: true
+    toc: true
+knitr: 
+  opts_chunk:
+    fig.align: center
+    out-width: 80%
+editor: source
+execute: 
+  echo: true
+  eval: true
+  cache: true
+---
+
+## Load libraries
+```{r libs}
+#| message: false
+#| warning: false
+#| cache: false
+
+# Load libraries, install if needed
+pkgs <- c("tidyverse", "tidylog", "devtools","viridis","nls.multstart", "broom", "patchwork", "nimble", "coda", "boot", "tidybayes","bayesplot")
+
+if(length(setdiff(pkgs,rownames(installed.packages()))) > 0){
+    install.packages(setdiff(pkgs, rownames(installed.packages())), dependencies = T)
+  }
+
+invisible(lapply(pkgs, library, character.only = T))
+
+options(ggplot2.continuous.colour = "viridis")
+theme_set(theme_light()) # check why global theme option not working when rendering
+# Set path
+
+home <- here::here()
+```
+
+## Read data
+```{r}
+#| message: false
+#| warning: false
+#| cache: false
+
+sallaa <- readRDS(file = paste0(home,"/data/data-for-2-2/salmon-laa_2025-04-11.RData")) %>%
+  #filter out non-aged individuals (~34000 individuals)
+  filter(!(is.na(age.sea) & is.na(age.sm))) %>% 
+  rowwise() %>% # rowwise needed for non vectorised function like sum
+  # create life stage and total age columns
+  mutate(age.type = case_when(age.sea == 0 | is.na(age.sea) ~ "smolt.only",
+                               age.sea > 0 & age.sm > 0 ~ "both",
+                               age.sm == 0 | is.na(age.sm) ~ "sea.only",
+                               .default = NA),
+    #mutate(age.type = if_else(age.sea == 0 | is.na(age.sea), "smolt", "sea"),
+         age.tot = sum(age.sea,age.sm, na.rm = TRUE)) %>%
+  ungroup()
+
+sallaa %>%
+  ggplot(aes(age.tot, length, color = age.type)) +
+  geom_point() +
+  facet_wrap(~age.type)
+```
+
+The smolt.only group contains alot of questionable data, i.e. too long fish for being young smolts. Maybe these should be sea age instead
+
+How many are thses fish and where do they come from...
+```{r}
+sallaa %>%
+  filter(age.type == "smolt.only",
+         length > 250) %>%
+  ggplot(aes(age.tot, length, color = country)) +
+  geom_point() +
+  facet_wrap(~age.type)
+
+# this is about 160 individuals
+sallaa %>%
+  filter(age.type == "smolt.only",
+         length > 250) %>%
+  count()
+
+# if we remove these, the counts per age.type are:
+sallaa %>%
+  filter(!(age.type == "smolt.only" & length > 250)) %>%
+  count(age.type)
+
+# The "smolt.only" comes almost exclusively from Sweden (and some from Finland).
+sallaa %>% 
+  filter(age.type == "smolt.only") %>%
+  count(country)
+
+```
+
+For now I will use the "both" type only.
+```{r}
+# Create a new dataset and reduce number of obs to make models faster
+sallaa2 <- sallaa %>%
+  filter(age.type == "both") %>% 
+  slice_sample(n = 40000)
+
+sallaa2 %>%
+  drop_na(sex) %>%
+  ggplot(aes(age.tot, length, color = sex)) +
+  geom_point() +
+  facet_wrap(~sex) +
+  scale_x_continuous(breaks = seq(0, 13, 1) )
+
+# how old can a salmon get? Is 12 possible or have smolt age been included in sea age?
+sallaa2 %>%
+  filter(age.tot > 10)
+```
+
+# Hists of age and length
+```{r}
+
+# If dropping all inds where both sea and sm age is NA 
+sallaa2 %>% 
+  ggplot() +
+  geom_density(aes(x = age.tot), fill = "deeppink", alpha = 0.5) +
+  xlim(0, 13) +
+  
+sallaa2 %>% 
+  ggplot() + 
+  geom_density(aes(x = length), fill = "deeppink", alpha = 0.5)
+  
+sallaa2 %>% 
+  ggplot() +
+  geom_density(aes(x = length, fill = factor(age.tot)), alpha = 0.5) +
+  #geom_histogram(aes(x = length)) +
+  facet_wrap(~age.tot, scales = "free")
+```
+
+**NOTE in code below: Ive silenced warmings to make html manageble when "logProb of data node length[1:nobs]: logProb less than -1e12."**
+
+# Model
+
+$$Y_i~ \sim Normal(\mu_i, \tau)$$
+$$\mu_i = Linf(1-e^{-k(age_i - t_0)})$$
+
+Where $Y_i$ is the length of fish $i$, $\mu_i$ is the mean length, $Linf$ is the asymptotic length, $k$ is the growth rate, $t_0$ is the theoretical age at zero length and $\tau$ is the precision.
+
+## 1. Overall vbgf parameters (using formulation with the t0 parameter)
+
+### a. Without t0
+```{r}
+vbgf1a.code <- nimbleCode({
+# Likelihood model
+   for(i in 1:nobs){
+    
+    length[i] ~ dnorm(mu[i], sd = sig)
+    
+    mu[i] <- Linf*(1-exp(-k*age.tot[i]))
+    #mu[i] <- Linf*(1-exp(-k*(age.tot[i]-t0)))
+    }
+   
+  # Priors
+  sig ~ dgamma(0.01, 0.01)
+  k ~ dnorm(0, 0.01)
+  #t0 ~ dnorm(0, 0.01)
+  Linf ~ dnorm(0, 0.001)
+   
+})
+
+# create NIMBLE model
+vbgf1a.model <- nimbleModel(vbgf1a.code, 
+                             constants = list(nobs = nrow(sallaa2)),
+                             data = sallaa2 %>% select(age.tot, length), 
+                             inits = list("k" = .2, "Linf"= 1000, sig = 100),
+                             check = TRUE)
+vbgf1a.model$initializeInfo()
+
+# Set up MCMC
+vbgf1a.c <- compileNimble(vbgf1a.model)
+#vbgf1a.mConf <- configureMCMC(vbgf1a.c, print=TRUE, useConjugacy = FALSE)  
+vbgf1a.mcmc <- buildMCMC(vbgf1a.c, enableWAIC = TRUE)
+vbgf1a.mcmc.c <- compileNimble(vbgf1a.mcmc, project = vbgf1a.c)
+samples <- runMCMC(vbgf1a.mcmc.c, nburnin = 20000, niter = 30000, nchains = 2, WAIC = TRUE, samplesAsCodaMCMC = TRUE) # perChainWAIC = TRUE) requires controlWAIC = list(online = TRUE) in configureMCMC().
+# warning: logProb of data node length[29937]: logProb less than -1e12.
+
+# # to skip code for building and compiling the model steps (but seemingly leave out $-operator functionality):
+# samples_vbfg_1n <- nimbleMCMC(code = vbgf_model_1_code, 
+#                               constants = list(nobs = nrow(sallaa2)),
+#                               data = data, 
+#                               inits = list("k" = .2, "Linf"= 1000),
+#                               nburnin = 1000, niter = 20000)
+# NAs were detected in model variables: sig, logProb_sig, logProb_length.
+# "The NA issue was because you did not initialize all the stochastic nodes"
+# zero mean may cause the "warning: logProb of data node length[14794]: logProb less than -1e12."
+# The runMCMC() function provides more control and a closer look at what NIMBLE is doing
+
+effectiveSize(samples$samples)
+summary(samples$samples)
+mcmc_trace(samples$samples)
+gelman.diag(mcmc(samples$samples))
+samples$WAIC
+
+gather_draws(samples$samples, c(k,Linf,t0)) %>% 
+  filter(.chain == 1) %>%
+  ggplot() + 
+  geom_density(aes(x = .value, color = factor(.variable))) + # age parameter i
+  facet_wrap(~.variable, scales = "free") +
+  theme_light() 
+
+vgbf_pars <- tidy_draws(samples$samples, c(k,Linf,t0)) %>% 
+  median_qi()
+
+preds <- data.frame(age = seq(0,13, by = 0.1)) %>%
+  mutate(length = vgbf_pars$Linf*(1-exp(-vgbf_pars$k*age)),
+         length.up = vgbf_pars$Linf.upper*(1-exp(-vgbf_pars$k.upper*age)),
+         length.lo = vgbf_pars$Linf.lower*(1-exp(-vgbf_pars$k.lower*age)))
+  
+preds %>%
+  ggplot() +
+  geom_line(aes(x = age, y = length)) +
+  geom_ribbon(aes(x = age,y = length, ymin = length.lo, ymax = length.up), alpha = .2, fill = "red") +
+ geom_point(data = sallaa2, aes(age.tot, length)) +
+  scale_x_continuous(breaks = seq(0, 13, 1) )
+
+
+```
+
+### b. With t0
+
+silenced "warning: logProb of data node length[1]: logProb less than -1e12".
+
+```{r}
+vbgf1b.code <- nimbleCode({
+
+  # Likelihood model
+   for(i in 1:nobs){
+    
+    length[i] ~ dnorm(mu[i], sd = sig)
+    
+    #mu[i] <- Linf*(1-exp(-k*age.tot[i]))
+    mu[i] <- Linf*(1-exp(-k*(age.tot[i]-t0)))
+    
+    }
+   
+  # Priors
+  sig ~ dgamma(0.01, 0.01)
+  k ~ dnorm(0, 0.01)
+  t0 ~ dnorm(0, 0.01)
+  Linf ~ dnorm(0, 0.001)
+   
+})
+
+# create NIMBLE model
+vbgf1b.model <- nimbleModel(vbgf1b.code,
+                              constants = list(nobs = nrow(sallaa2)),
+                              data = sallaa2 %>% select(age.tot, length), 
+                              inits = list("k" = .2, "Linf"= 1000, t0 = -0.5),
+                              check = TRUE)
+
+# Set up MCMC
+vbgf1b.c <- compileNimble(vbgf1b.model)
+vbgf1b.mcmc <- buildMCMC(vbgf1b.c, enableWAIC = TRUE)
+vbgf1b.mcmc.c <- compileNimble(vbgf1b.mcmc, project = vbgf1b.c)
+```
+
+
+```{r}
+#| output: false
+vbgf1b.samp <- runMCMC(vbgf1b.mcmc.c, nburnin = 40000, niter = 50000, thin = 2, nchains = 2, WAIC = TRUE, samplesAsCodaMCMC = TRUE)
+```
+
+
+```{r}
+effectiveSize(vbgf1b.samp$samples)
+summary(vbgf1b.samp)
+mcmc_trace(vbgf1b.samp$samples)
+gelman.diag(mcmc(vbgf1b.samp$samples))
+
+gather_draws(vbgf1b.samp$samples, c(k,Linf,t0)) %>% 
+  ggplot() + 
+  geom_density(aes(x = .value, color = factor(.variable))) + # age parameter i
+  facet_wrap(~.variable, scales = "free") +
+  theme_light() 
+
+vgbf_pars <- tidy_draws(vbgf1b.samp$samples, c(k,Linf,t0)) %>% 
+  median_qi()
+
+predsb <- data.frame(age = seq(0,13, by = 0.1)) %>%
+  mutate(length = vgbf_pars$Linf*(1-exp(-vgbf_pars$k*age)),
+         length.up = vgbf_pars$Linf.upper*(1-exp(-vgbf_pars$k.upper*age)),
+         length.lo = vgbf_pars$Linf.lower*(1-exp(-vgbf_pars$k.lower*age)))
+  
+```
+
+### c. Compare with and without t0.
+
+```{r}
+# Compare WAIC
+c("1a" = samples$WAIC, "2b" = vbgf1b.samp$WAIC)
+# WAIC is ~1% lower for the model with t0 (lppd and pWAIC also lower)
+# log pointwise predictive density (llpd) and effective number of parameters preferred (pWAIC)
+
+# Compare posteriors
+gather_draws(samples$samples, c(k,Linf,t0)) %>% 
+  filter(.chain == 1) %>%
+  ggplot() + 
+  geom_density(aes(x = .value, color = factor(.variable))) + # age parameter i
+  facet_wrap(~.variable, scales = "free") +
+  theme_light() +
+
+gather_draws(vbgf1b.samp$samples, c(k,Linf,t0)) %>% 
+  filter(.chain == 1) %>%
+  ggplot() + 
+  geom_density(aes(x = .value, color = factor(.variable))) + # age parameter i
+  facet_wrap(~.variable, scales = "free") +
+  theme_light() 
+
+```
+
+### d. Sex dependent without t0
+warning silenced "warning: logProb of data node length[1]: logProb less than -1e12".
+
+```{r}
+vbgf1d.code <- nimbleCode({
+
+  # Likelihood model
+   for(i in 1:nobs){
+    
+    length[i] ~ dnorm(mu[i], sd = sig)
+    
+    mu[i] <- (Linf+beta1*sex[i])*(1-exp(-k*(age.tot[i])))
+    
+    }
+   
+  # Priors
+  sig ~ dgamma(0.01, 0.01)
+  k ~ dnorm(0, 0.01)
+  Linf ~ dnorm(0, 0.001)
+  beta1 ~ dnorm(0, 0.001)
+   
+})
+
+data_1d = sallaa2 %>% select(age.tot, length, sex) %>% mutate(sex = as.integer(if_else(sex == "f", 0, 1))) %>%  drop_na(sex)
+
+# create NIMBLE model
+vbgf1d.model <- nimbleModel(vbgf1d.code,
+                              constants = list(nobs = nrow(data_1d)),
+                              data = data_1d, 
+                              inits = list("k" = .2, "Linf"= 1000, "beta1" = -100),
+                              check = TRUE)
+
+vbgf1d.model$calculate("beta1")
+# Set up MCMC
+vbgf1d.c <- compileNimble(vbgf1d.model)
+vbgf1d.mcmc <- buildMCMC(vbgf1d.c)
+vbgf1d.mcmc.c <- compileNimble(vbgf1d.mcmc, project = vbgf1d.c)
+```
+
+
+```{r}
+#| output: false
+vbgf1d.samp <- runMCMC(vbgf1d.mcmc.c, nburnin = 40000, niter = 50000,
+                           samplesAsCodaMCMC = TRUE)
+```
+
+
+```{r}
+effectiveSize(vbgf1d.samp)
+summary(vbgf1d.samp)
+mcmc_trace(vbgf1d.samp)
+
+gather_draws(vbgf1d.samp, c(k,Linf,beta1)) %>% 
+  ggplot() + 
+  geom_density(aes(x = .value, color = factor(.variable))) + # age parameter i
+  facet_wrap(~.variable, scales = "free") +
+  theme_light() 
+
+preds <-
+  vbgf1d.samp %>%
+  spread_draws(k,Linf, beta1) %>% 
+  median_qi() %>%
+  expand_grid(age.tot = seq(0,12, by = 0.1), sex = c("f", "m")) %>%
+  mutate(length = if_else(sex == "m", (Linf + 1*beta1)*(1-exp(-k*age.tot)),
+                          Linf*(1-exp(-k*age.tot))),
+         length.upp = if_else(sex == "m", 
+                              (Linf.upper + 1*beta1.upper)*(1-exp(-k.upper*age.tot)),
+                              (Linf.upper + 0*beta1.upper)*(1-exp(-k.upper*age.tot))),
+         length.low = if_else(sex == "m", 
+                              (Linf.lower + 1*beta1.lower)*(1-exp(-k.lower*age.tot)),
+                              (Linf.lower + 0*beta1.lower)*(1-exp(-k.lower*age.tot))))
+
+preds %>%
+  ggplot() +
+  geom_line(aes(x = age.tot, y = length, color = sex)) +
+  geom_point(data = sallaa2 %>% drop_na(sex), aes(age.tot, length, fill = sex), alpha = 0.5, size = 0.6) +
+  geom_ribbon(aes(x = age.tot,y = length, ymin = length.low, ymax = length.upp, color = sex), alpha = .5) 
+
+```
+
+## 2. Multivariate normal prior vgbf parameters and LKJ for the precision matrix
+
+https://groups.google.com/g/nimble-users/c/t1ArfNDPcdg/m/1bT8qXecEAAJ
+https://stats.stackexchange.com/questions/304684/why-lkjcorr-is-a-good-prior-for-correlation-matrix
+
+### a. Two vgbf pars
+
+warning silenced "warning: logProb of data node length[1]: logProb less than -1e12".
+
+```{r}
+vbgf2a.code<- nimbleCode({
+  
+  # likelihood
+  for(i in 1:nobs){
+    
+    length[i] ~ dnorm(mu[i], sd = sig)
+    
+    #mu[i] <- klt[1]*(1-exp(-klt[2]*(age.tot[i]-klt[3])))
+    mu[i] <- klt[1]*(1-exp(-klt[2]*(age.tot[i])))
+    
+    }
+  
+  # priors 
+  sig ~ dgamma(0.01, 0.01)
+  
+  klt[1:npars] ~ dmnorm(mu_klt[1:npars], tau_klt[1:npars, 1:npars])
+  mu_klt[1] ~ dnorm(0, 0.01)
+  mu_klt[2] ~ dnorm(0, 0.01)
+  
+  tau_klt[1:npars, 1:npars] <- inverse(sigma_klt[1:npars, 1:npars])
+  for(k in 1:npars){
+    for(j in 1:npars){
+        sigma_klt[k,j] <- Rnew[k,j] * sigma_gpar[k] * sigma_gpar[j]
+    }
+  }
+  sigma_gpar[1] ~ dnorm(-1,4)
+  sigma_gpar[2] ~ dnorm(-1,4)
+  
+  Rnew[1:npars,1:npars] <- t(R[1:npars,1:npars]) %*% R[1:npars,1:npars]
+  alpha[1] <- eta + (npars - 2)/2
+  corY[1] ~ dbeta(alpha[1], alpha[1])
+  r12 <- 2 * corY[1] - 1
+  R[1,1] <- 1
+  R[1,2] <- r12
+  R[2,2] <- sqrt(1 - r12^2)
+  R[2,1] <- 0 #use with 2 pars, comment out w more than 2 pars
+  
+  })
+
+npars <- 2
+inits<-function(){
+list(mu_klt = c(rnorm(1,1000,100),
+                rnorm(1,0.5,0.5)),
+     sigma_gpar=c(rnorm(1,100,10), rnorm(1,.1,1)), corY = c(rbeta(1,2,2),rbeta(1,2,2)))}
+
+# create NIMBLE model
+model_2a <- nimbleModel(vbgf2a.code, constants = list(npars = npars, eta=2,
+                                                   nobs = nrow(sallaa2)),
+                     inits=inits(),
+                     data = sallaa2 %>% select(age.tot, length) )
+
+vbgf2a.c <- compileNimble(model_2a, showCompilerOutput = TRUE)
+vbgf2a.conf  <- configureMCMC(vbgf2a.c, print=TRUE, useConjugacy = FALSE, monitors = "klt", enableWAIC= TRUE)  
+vbgf2a.mcmc <- buildMCMC(vbgf2a.conf) # uncompiled R code
+
+vbgf2a.mcmc.c <- compileNimble(vbgf2a.mcmc, project = model_2a)
+```
+
+
+```{r}
+#| output: false
+vbgf2a.samp <- runMCMC(vbgf2a.mcmc.c, niter = 30000, nburnin = 20000, thin=2, samplesAsCodaMCMC = TRUE, nchains = 2, WAIC = TRUE)
+```
+
+
+```{r}
+mcmc_trace(vbgf2a.samp$samples)
+gelman.diag(vbgf2a.samp$samples)
+
+vbgf2a.samp$samples %>%
+  gather_draws(klt[par]) %>%
+  ggplot() + 
+  geom_density(aes(x = .value, color = factor(par))) + # age parameter i
+  facet_wrap(~par, scales = "free") +
+  theme_light() 
+
+```
+
+### b. Three vgbf pars
+
+warning silenced "warning: logProb of data node length[1]: logProb less than -1e12".
+
+```{r}
+vbgf2b.code <- nimbleCode({
+  
+  # likelihood
+  for(i in 1:nobs){
+    
+    length[i] ~ dnorm(mu[i], sd = sig)
+    
+    mu[i] <- klt[1]*(1-exp(-klt[2]*(age.tot[i]-klt[3])))
+    
+    }
+  
+  # priors 
+  sig ~ dgamma(0.01, 0.01)
+  
+  klt[1:npars] ~ dmnorm(mu_klt[1:npars], tau_klt[1:npars, 1:npars])
+  
+  mu_klt[1] ~ dnorm(0, 0.01)
+  mu_klt[2] ~ dnorm(0, 0.01)
+  mu_klt[3] ~ dnorm(0, 0.01)
+  tau_klt[1:npars, 1:npars] <- inverse(sigma_klt[1:npars, 1:npars])
+  for(k in 1:npars){
+    for(j in 1:npars){
+        sigma_klt[k,j] <- Rnew[k,j] * sigma_gpar[k] * sigma_gpar[j]
+    }
+  }
+  sigma_gpar[1] ~ dnorm(-1,4)
+  sigma_gpar[2] ~ dnorm(-1,4)
+  sigma_gpar[3] ~ dnorm(-1,4)
+
+  Rnew[1:npars,1:npars] <- t(R[1:npars,1:npars]) %*% R[1:npars,1:npars]
+  alpha[1] <- eta + (npars - 2)/2
+  corY[1] ~ dbeta(alpha[1], alpha[1])
+  r12 <- 2 * corY[1] - 1
+
+  R[1,1] <- 1
+  R[1,2] <- r12
+  R[2,2] <- sqrt(1 - r12^2)
+  
+  #### comment out section below until #### when running with 2 stocks
+  R[2:npars,1] <- 0    #with > 2 pars (plus lines below)
+
+  for (m in 2:(npars-1)) {
+    ## Draw beta random variable
+    alpha[m] <- alpha[(m-1)] - 0.5
+    corY[m] ~ dbeta(m / 2, alpha[m])
+    ## Draw uniformly on a hypersphere
+    for (jj in 1:m) {
+      corZ[m, jj] ~ dnorm(0, 1)
+    }
+    scZ[m, 1:m] <- corZ[m, 1:m] / sqrt(inprod(corZ[m, 1:m], corZ[m, 1:m]))
+    R[1:m,(m+1)] <- sqrt(corY[m]) * scZ[m,1:m]
+    R[(m+1),(m+1)] <- sqrt(1 - corY[m])
+    for(jk in (m+1):npars){
+      R[jk,m] <- 0
+    }
+    
+    } 
+  })
+
+npars <- 3
+inits<-function(){
+list(mu_klt = c(rnorm(1,1000,100),
+                rnorm(1,0.5,0.5),
+                rnorm(1,-1,0.5)),
+     sigma_gpar=c(rnorm(1,100,10), rnorm(1,.1,1), rnorm(1,exp(.1),exp(0.05))), corY = c(rbeta(1,2,2),rbeta(1,2,2)))}
+# create NIMBLE model
+model_2b <- nimbleModel(vbgf2b.code, constants = list(npars=npars,eta=2,
+                                                   nobs = nrow(sallaa2)),
+                     inits=inits(),
+                     data = sallaa2 %>% select(age.tot, length) )
+
+# compile model
+vbgf2b.c <- compileNimble(model_2b)
+# configure mcmc
+vbgf2b.conf <- configureMCMC(vbgf2b.c, print=TRUE, useConjugacy = FALSE, monitors = "klt", enableWAIC = TRUE)
+# build mcmc
+vbgf2b.mcmc <- buildMCMC(vbgf2b.conf)
+# compile mcmc and specify the project model
+vbgf2b.mcmc.c <- compileNimble(vbgf2b.mcmc, project = model_2b)
+# sample mode
+```
+
+
+```{r}
+#| output: false
+vbgf2b.samp <- runMCMC(vbgf2b.mcmc.c, niter = 70000, nburnin = 60000, thin=2, samplesAsCodaMCMC = TRUE, nchains = 2, WAIC = TRUE)
+```
+
+
+```{r}
+summary(vbgf2b.samp$samples)
+mcmc_trace(vbgf2b.samp$samples)
+
+gather_draws(vbgf2b.samp$samples, klt[par]) %>%
+  #mutate(.value = exp(.value)) %>%
+  ggplot() + 
+  geom_density(aes(x = .value, color = factor(par))) + # age parameter i
+  facet_wrap(~par, scales = "free") +
+  theme_light() 
+
+```
+### c. Compare WAIC with mnorm and with/without t0.
+
+```{r}
+c(a = vbgf2a.samp$WAIC, b = vbgf2b.samp$WAIC)
+```
+
+## 3. Spatial model w Multivariate normal prior 
+
+### a. Three vgbf pars and hierarchical by unit
+
+silnced: "warning: logProb of data node length[7]: logProb less than -1e12."
+
+```{r}
+vbgf3a.code<- nimbleCode({
+  
+  # likelihood
+  for(i in 1:nobs){
+    length[i] ~ dnorm(mu[i], sd = sig)
+    mu[i] <- klt[spat.unit[i],1]*(1-exp(-klt[spat.unit[i],2]*(age.tot[i]-klt[spat.unit[i],3])))
+    
+    }
+  
+  # priors 
+  sig ~ dgamma(0.01, 0.01)
+  
+  for (j in 1:nosu){
+    klt[j,1:npars] ~ dmnorm(mu_klt[1:npars], tau_klt[1:npars, 1:npars])
+  }
+  
+  mu_klt[1] ~ dnorm(0, 0.01)
+  mu_klt[2] ~ dnorm(0, 0.01)
+  mu_klt[3] ~ dnorm(0, 0.01)
+    
+  tau_klt[1:npars, 1:npars] <- inverse(sigma_klt[1:npars, 1:npars])
+  
+  for(l in 1:npars){
+    for(k in 1:npars){
+        sigma_klt[l,k] <- Rnew[l,k] * sigma_gpar[l] * sigma_gpar[k]
+    }
+  }
+  
+  sigma_gpar[1] ~ dnorm(-1,4)
+  sigma_gpar[2] ~ dnorm(-1,4)
+  sigma_gpar[3] ~ dnorm(-1,4)
+
+  Rnew[1:npars,1:npars] <- t(R[1:npars,1:npars]) %*% R[1:npars,1:npars]
+  alpha[1] <- eta + (npars - 2)/2
+  corY[1] ~ dbeta(alpha[1], alpha[1])
+  r12 <- 2 * corY[1] - 1
+
+  R[1,1] <- 1
+  R[1,2] <- r12
+  R[2,2] <- sqrt(1 - r12^2)
+  
+  #### comment out section below until #### when running with 2 stocks
+  R[2:npars,1] <- 0    #with > 2 pars (plus lines below)
+
+  for (m in 2:(npars-1)) {
+    ## Draw beta random variable
+    alpha[m] <- alpha[(m-1)] - 0.5
+    corY[m] ~ dbeta(m / 2, alpha[m])
+    ## Draw uniformly on a hypersphere
+    for (jj in 1:m) {
+      corZ[m, jj] ~ dnorm(0, 1)
+    }
+    scZ[m, 1:m] <- corZ[m, 1:m] / sqrt(inprod(corZ[m, 1:m], corZ[m, 1:m]))
+    R[1:m,(m+1)] <- sqrt(corY[m]) * scZ[m,1:m]
+    R[(m+1),(m+1)] <- sqrt(1 - corY[m])
+    for(jk in (m+1):npars){
+      R[jk,m] <- 0
+    }
+    
+    }  
+  })
+
+npars <- 3
+inits<-function(){
+list(mu_klt = c(rnorm(1,1000,100),
+                rnorm(1,0.5,0.5),
+                rnorm(1,-1,0.5)),
+     sigma_gpar=c(rnorm(1,100,10), rnorm(1,.1,1), rnorm(1,exp(.1),exp(0.05))), corY = c(rbeta(1,2,2),rbeta(1,2,2)))}
+# create NIMBLE model
+model_3a <- nimbleModel(vbgf3a.code, constants = list(npars=npars, eta=2, nosu = 11,
+                                                      nobs = nrow(sallaa2),
+                                                      spat.unit = as.integer(factor(sallaa2$spat.unit))),
+                        inits=inits(),
+                        data = sallaa2 %>% select(age.tot,length) )
+
+# compile model
+vbgf3a.c <- compileNimble(model_3a)
+# configure mcmc
+vbgf3a.conf <- configureMCMC(model_3a, print=TRUE, useConjugacy = FALSE, monitors = "klt")
+# build mcmc
+vbgf3a.mcmc <- buildMCMC(vbgf3a.conf)
+# compile mcmc and specify the project model
+vbgf3a.mcmc.c <- compileNimble(vbgf3a.mcmc, project = model_3a)
+# sample mode
+```
+
+
+```{r}
+#| output: false
+vbgf3a.samp <- runMCMC(vbgf3a.mcmc.c, nchains = 2, niter = 70000, nburnin = 60000, thin=2, samplesAsCodaMCMC = TRUE)
+```
+
+
+```{r}
+# NAs produced
+summary(vbgf3a.samp)
+mcmc_trace(vbgf3a.samp)
+
+vbgf3a.samp %>%
+  gather_draws(klt[spat.unit,par], sep = ",") %>%
+  #mutate(val = exp(.value)) %>%
+  ggplot() + 
+  geom_density(aes(x = .value, color = factor(par))) + # age parameter i
+  facet_wrap(par~spat.unit, scales = "free", nrow = 3) +
+  theme_light() 
+
+```
+
+### b. Sex covariate Linf, three vbgf pars and spatially hierarchical
+
+silenced: "warning: logProb of data node length[7]: logProb less than -1e12."
+```{r}
+vbgf3b.code <- nimbleCode({
+  
+  # likelihood
+  for(i in 1:nobs){
+    length[i] ~ dnorm(mu[i], sd = sig)
+    mu[i] <- (klt[spat.unit[i],1] + beta1*sex[i]) * (1-exp(-klt[spat.unit[i],2]*(age.tot[i]-klt[spat.unit[i],3])))
+    #mu[i] <- (klt[spat.unit[i],1] + beta1*sex[i]) * (1-exp(-(klt[spat.unit[i],2] + beta1*sex[i])*(age.tot[i]-(klt[spat.unit[i],3] + beta1*sex[i]))))
+    }
+  
+  # priors 
+  sig ~ dgamma(0.01, 0.01)
+  
+  beta1 ~ dnorm(0, 0.01)
+  
+  for (j in 1:nosu){
+    klt[j,1:npars] ~ dmnorm(mu_klt[1:npars], tau_klt[1:npars, 1:npars])
+  }
+  
+  mu_klt[1] ~ dnorm(0, 0.01)
+  mu_klt[2] ~ dnorm(0, 0.01)
+  mu_klt[3] ~ dnorm(0, 0.01)
+    
+  tau_klt[1:npars, 1:npars] <- inverse(sigma_klt[1:npars, 1:npars])
+  
+  for(l in 1:npars){
+    for(k in 1:npars){
+        sigma_klt[l,k] <- Rnew[l,k] * sigma_gpar[l] * sigma_gpar[k]
+    }
+  }
+  
+  sigma_gpar[1] ~ dnorm(-1,4)
+  sigma_gpar[2] ~ dnorm(-1,4)
+  sigma_gpar[3] ~ dnorm(-1,4)
+
+  Rnew[1:npars,1:npars] <- t(R[1:npars,1:npars]) %*% R[1:npars,1:npars]
+  alpha[1] <- eta + (npars - 2)/2
+  corY[1] ~ dbeta(alpha[1], alpha[1])
+  r12 <- 2 * corY[1] - 1
+
+  R[1,1] <- 1
+  R[1,2] <- r12
+  R[2,2] <- sqrt(1 - r12^2)
+  
+  #### comment out section below until #### when running with 2 stocks
+  R[2:npars,1] <- 0    #with > 2 pars (plus lines below)
+
+  for (m in 2:(npars-1)) {
+    ## Draw beta random variable
+    alpha[m] <- alpha[(m-1)] - 0.5
+    corY[m] ~ dbeta(m / 2, alpha[m])
+    ## Draw uniformly on a hypersphere
+    for (jj in 1:m) {
+      corZ[m, jj] ~ dnorm(0, 1)
+    }
+    scZ[m, 1:m] <- corZ[m, 1:m] / sqrt(inprod(corZ[m, 1:m], corZ[m, 1:m]))
+    R[1:m,(m+1)] <- sqrt(corY[m]) * scZ[m,1:m]
+    R[(m+1),(m+1)] <- sqrt(1 - corY[m])
+    for(jk in (m+1):npars){
+      R[jk,m] <- 0
+    }
+    
+    }  
+  })
+
+npars <- 3
+inits<-function(){
+list(mu_klt = c(rnorm(1,1100,100),
+                rnorm(1,0.5,0.5),
+                rnorm(1,-1,0.5)),
+     beta1 = rnorm(1,-15,5),
+     sigma_gpar=c(rnorm(1,100,10), rnorm(1,.1,1), rnorm(1,exp(.1),exp(0.05))), corY = c(rbeta(1,2,2),rbeta(1,2,2)))}
+
+data_3b = sallaa2 %>% select(age.tot, length, sex, spat.unit) %>% 
+  mutate(sex = as.integer(if_else(sex == "f", 0, 1)),
+         spat.unit = as.integer(factor(sallaa2$spat.unit))) %>% drop_na(sex)
+# create NIMBLE model
+model_3b <- nimbleModel(vbgf3b.code, constants = list(npars=npars, eta=2, nosu = 11,
+                                                      nobs = nrow(data_3b),
+                                                      spat.unit = data_3b$spat.unit),
+                        inits=inits(),
+                        data = data_3b %>% select(age.tot,length,sex))
+
+# compile model
+vbgf3b.c <- compileNimble(model_3b)
+vbgf3b.c$beta1 # if not using inits in nimbleModel, these calculated varaibles wont show up
+vbgf3b.c$mu_klt
+# configure mcmc
+vbgf3b.conf <- configureMCMC(vbgf3b.c, print=TRUE, useConjugacy = FALSE, , monitors =  c("klt", "beta1"))
+# build mcmc
+vbgf3b.mcmc <- buildMCMC(vbgf3b.conf)
+# compile mcmc and specify the project model
+vbgf3b.mcmc.c <- compileNimble(vbgf3b.mcmc)#, project = vbgf3b.c)
+# sample mode
+vbgf3b.conf$getUnsampledNodes()
+```
+
+```{r}
+#| output: false
+vbgf3b.samp <- runMCMC(vbgf3b.mcmc.c, nchains = 2, niter = 150000, nburnin = 140000, thin=2, samplesAsCodaMCMC = TRUE)
+```
+
+```{r}
+summary(vbgf3b.samp)
+mcmc_trace(vbgf3b.samp)
+gelman.diag(vbgf3b.samp)
+effectiveSize(vbgf3b.samp)
+
+vbgf3b.samp %>%
+  gather_draws(klt[spat.unit,par], beta1, sep = ",") %>%
+  ggplot() + 
+  geom_density(aes(x = .value, color = factor(par))) + # age parameter i
+  facet_wrap(par~spat.unit, scales = "free", nrow = 3) +
+  theme_light() 
+
+```
+
+### c. Simulate length from prior 
+
+"Another check that’s sometimes useful with more complex models, is to remove the observations (length) in your case from the data() list, and add them to the list of monitored variables, and then simulate from the prior (=your model without data).  This can be a useful check if your priors and model structure are producing values that are reasonable/consistent with the range of the data…"
+```{r}
+
+# create NIMBLE model base on model 3b
+model.3b.noleng <- nimbleModel(vbgf3b.code, constants = list(npars=npars, eta=2, nosu = 11,
+                                                      nobs = nrow(data_3b),
+                                                      spat.unit = data_3b$spat.unit),
+                        inits=inits(),
+                        data = data_3b %>% select(age.tot,sex))
+
+simModel$calculate('length') # NA as these are not calculated in nimble model
+vbgf3b.nl.c <- compileNimble(model.3b.noleng)
+
+vbgf3b.nl.c$beta1
+vbgf3b.nl.c$mu_klt
+vbgf3b.nl.c$klt
+vbgf3b.nl.c$sigma_gpar
+vbgf3b.nl.c$sig
+vbgf3b.nl.c$mu
+# lenght is so far way off just as the variables above
+vbgf3b.nl.c$length %>%
+  summary()
+  
+vbgf3b.nl.conf <- configureMCMC(vbgf3b.nl.c, print=TRUE, useConjugacy = FALSE, monitors =  c("length","beta1","klt"))
+# build mcmc
+vbgf3b.nl.mcmc <- buildMCMC(vbgf3b.nl.conf)
+# compile mcmc and specify the project model
+vbgf3b.nl.mcmc.c <- compileNimble(vbgf3b.nl.mcmc)
+# sample mode
+
+vbgf3b.nl.samp <- runMCMC(vbgf3b.nl.mcmc.c, nchains = 1, niter = 5000, nburnin = 4000, thin=2, samplesAsCodaMCMC = TRUE)
+
+vbgf3b.nl.samp %>%
+  as_tibble() %>%
+  select(contains("length")) %>%
+  pivot_longer(cols = everything(), names_to = "i", values_to = "val") %>%
+  filter(!is.infinite(val)) %>%
+  summary(val)
+
+vbgf3b.nl.samp %>%
+  as_tibble() %>%
+  select(contains("length")) %>%
+  pivot_longer(cols = everything(), names_to = "i", values_to = "val") %>%
+  filter(!is.infinite(val)) %>%
+  ggplot() + 
+  geom_density(aes(x = val)) +
+  xlim(-1e+3,1e+3) +
+  theme_light() 
+    
+```

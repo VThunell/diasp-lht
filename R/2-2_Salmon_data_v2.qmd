@@ -1,0 +1,130 @@
+---
+title: "Salmon VBGF model v3"
+author: "Viktor Thunell" 
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+format: 
+  html:
+    code-fold: true
+    code-summary: "Show code"
+    page-layout: full
+    embed-resources: true
+    toc: true
+knitr: 
+  opts_chunk:
+    fig.align: center
+    out-width: 80%
+editor: source
+execute: 
+  echo: true
+  eval: true
+  cache: false
+---
+
+## Load libraries
+```{r libs}
+#| message: false
+#| warning: false
+#| cache: false
+
+# Load libraries, install if needed
+pkgs <- c("tidyverse", "tidylog", "devtools","viridis","nls.multstart", "broom", "patchwork", "nimble", "coda", "boot", "tidybayes","bayesplot","sdmTMB")
+
+if(length(setdiff(pkgs,rownames(installed.packages()))) > 0){
+    install.packages(setdiff(pkgs, rownames(installed.packages())), dependencies = T)
+  }
+
+invisible(lapply(pkgs, library, character.only = T))
+
+devtools::source_url("https://raw.githubusercontent.com/VThunell/diasp-lht/main/R/functions/map-plot.R") # message of SHA-1 hash for file
+
+options(ggplot2.continuous.colour = "viridis")
+theme_set(theme_light()) # check why global theme option not working when rendering
+# Set path
+
+home <- here::here()
+```
+
+## Read data
+```{r}
+#| message: false
+#| warning: false
+#| cache: false
+
+sallaa <- readRDS(file = paste0(home,"/data/data-for-2-2/salmon-laa_2025-05-02.RData")) %>% drop_na(age.tot) 
+
+sallaa %>%
+  drop_na(age.type) %>%
+  ggplot(aes(age.tot, length, color = age.type)) +
+  geom_point() +
+  facet_wrap(~age.type)
+```
+
+The smolt.only group contains alot of questionable data, i.e. too long fish for being young smolts. Maybe these should be sea age instead
+
+How many are thses fish and where do they come from...
+```{r}
+sallaa %>%
+  filter(age.type == "smolt.only") %>%
+  ggplot(aes(age.tot, length, color = country)) +
+  geom_point() +
+  facet_wrap(~age.type)
+
+# The counts per age.type are:
+sallaa %>%
+  count(age.type)
+
+# The "smolt.only" comes from Sweden
+sallaa %>% 
+  filter(age.type == "smolt.only") %>%
+  count(country)
+
+```
+
+## Smolt per river
+```{r}
+plot_map_Euro +
+  geom_point(data = sallaa %>% filter(age.type == "smolt.only") %>% 
+               add_utm_columns(ll_names = c("lon", "lat"), utm_crs = 32633),
+             aes(X*1000, Y*1000), color = "#440154FF", size = 0.3) +
+  theme_sleek() 
+  
+ggplot(data = sallaa %>% filter(age.type == "smolt.only") %>% summarise(count = n(), .by = site), aes(count, site)) +
+  geom_bar(stat="identity", fill = "#440154FF") 
+  
+ggplot(data = sallaa %>% filter(age.type == "smolt.only") %>% summarise(count = n(), .by = year), aes(year,count)) +
+  geom_bar(stat="identity", fill = "#440154FF")
+
+```
+## Length at age.tot per river
+```{r}
+# sites with smolts
+sws <- sallaa %>% filter(age.type == "smolt.only") %>% distinct(site) %>% pull(site) 
+
+sallaa %>%
+  filter(site %in% sws) %>%
+  ggplot(aes(age.tot, length, color = age.type)) +
+  geom_point() +
+  facet_wrap(~site)
+
+```
+
+# Hists of age and length
+```{r}
+
+# If dropping all inds where both sea and sm age is NA 
+sallaa %>% 
+  ggplot() +
+  geom_density(aes(x = age.tot), fill = "deeppink", alpha = 0.5) +
+  xlim(0, 13) +
+  
+sallaa %>% 
+  ggplot() + 
+  geom_density(aes(x = length), fill = "deeppink", alpha = 0.5)
+  
+sallaa %>% 
+  ggplot() +
+  geom_density(aes(x = length, fill = factor(age.type)), alpha = 0.5) +
+  #geom_histogram(aes(x = length)) +
+  facet_wrap(~age.tot, scales = "free")
+```
+

@@ -19,7 +19,18 @@ execute:
   cache: true
 ---
 
-Summaries of DCF data are available 
+## Background
+
+DIASPARA will make recommendations to enhance the DCF and Regional Workplans. DIASPARA aims to better align data needs and data collection, as such, it will contribute to the objectives of the DCF and the CFP, and will also bring valuable insights for the future Regional Workplans.
+
+As part of this work, Workpackage 2 will create an inventory of available and potentially available data on Atlantic salmon
+and European eel LHTs (T2.1.1) and identify gaps in the current DCF and make recommendations for improvements in data collection based on assessment model needs identified in WP4 (T2.1.2)
+
+This script summarizes information in the DCF Annual reports on collected data for diadromous species.
+
+The summary can be used to 
+* Compare data availability with future data needs to implement key variation in LHTs in SSAM.
+
 
 ## Load libraries
 
@@ -287,7 +298,7 @@ c(diadrom.DCF.1E$`Life stage`,diadrom.DCF.23$`Life stage`) %>%
   unique() %>% length()
 
 # THIS BELOW NEEDS TO BE REVISED!! FIXING CHARACTER TO NUMERICS POPERLY
-diadrom.DCF.23 %>%
+diadrom.DCF.23.clean <- diadrom.DCF.23 %>%
   rename(ach.n.unit = `Achieved number of units`,
          #Diad.var = `Diadromous variable`,
          life.stage = `Life stage`,
@@ -319,8 +330,9 @@ diadrom.DCF.23 %>%
                                 .default = ach.n.unit),
          ach.n.unit.num = parse_number(ach.n.unit)) %>%
   mutate(country = if_else(country == "Spain", "ESP", country)) %>%
-  drop_na(life.stage) %>%
-  #filter(ach.n.ind < 2000) %>%
+  drop_na(life.stage)
+
+diadrom.DCF.23.clean %>%
   filter(Species == "Anguilla anguilla") %>%
   ggplot() +
   geom_tile(aes(year, country, fill = ach.n.unit.num)) +
@@ -331,40 +343,7 @@ diadrom.DCF.23 %>%
     labs(title = "Eel achieved number of individuals measured at national level", subtitle = "Table 2.3. & 1E  - Diadromous")
 
 # Salmon
-diadrom.DCF.23 %>%
-  rename(ach.n.unit = `Achieved number of units`,
-         #Diad.var = `Diadromous variable`,
-         life.stage = `Life stage`,
-         #unit = Unit,
-         country = MS,
-         year =`Implementation year`) %>%
-  select(ach.n.unit, life.stage, country, year, Species) %>%
-  bind_rows(diadrom.DCF.1E %>%
-              rename(ach.n.unit = `Achieved numbers`,
-                     #Diad_var = `Diadromous variable`,
-                     life.stage = `Life stage`,
-                     country = MS,
-                     unit = Unit,
-                     year =`Sampling period`) %>%
-              select(ach.n.unit, life.stage, country, year, Species)) %>%
-  mutate(life.stage = make_clean_names(life.stage, allow_dupes = TRUE),
-         life.stage = case_when(life.stage %in% c("silver","silver_eel","silver_eels","silver_eel") ~ "silver",
-                                life.stage %in% c("yellow_silver","yellow_silver_eel","yellow_silver","silver_eel_yellow_eel","yellow_eel_and_silver_eel", "yellow_eel_silver_eel") ~ "yellow_silver",
-                                life.stage %in% c("x","na","-", "n_a","not_pertinent", "1_15", "1_year", "x1_2_y_1") ~ NA,
-                                life.stage %in% c("yellow", "yellow_eel","yellow_eels", "recruits_yellow", "recruits_yellow_ss", "yellow_eel_ss") ~ "yellow",
-                                life.stage %in% c("glass_eels","glass_eel","glass_eel_recruitment","recruits_glass_eel","glass_eels") ~ "glass",
-                                life.stage %in% c("Sex","sex") ~ "Sex",
-                                life.stage %in% c("all") ~ "All",
-                                life.stage %in% c("Sex","sex") ~ "Sex",
-                                life.stage %in% c("adult_spawning_salmon") ~ "spawning_adult",
-                                 .default = life.stage),
-         life.stage = as.factor(life.stage)) %>%
-  mutate(ach.n.unit = case_when(ach.n.unit %in% c("N/A","NA","na", "not applicable","census","hundreds", " ") ~ NA,
-                                .default = ach.n.unit),
-         ach.n.unit.num = parse_number(ach.n.unit)) %>%
-  mutate(country = if_else(country == "Spain", "ESP", country)) %>%
-  drop_na(life.stage) %>%
-  #filter(ach.n.ind < 2000) %>%
+diadrom.DCF.23.clean %>%
   filter(Species == "Salmo salar") %>%
   ggplot() +
   geom_tile(aes(year, country, fill = ach.n.unit.num)) +
@@ -374,5 +353,14 @@ diadrom.DCF.23 %>%
         axis.text = element_text(size=6)) +
     labs(title = "Salmon achieved number of individuals measured at national level", subtitle = "Table 2.3. & 1E  - Diadromous")
 
+diadrom.DCF.23.clean %>%
+  filter(life.stage %in% c("yellow", "silver", "glass", "yellow_silver")) %>%
+  ggplot() +
+  geom_tile(aes(year, country, fill = ach.n.unit.num)) +
+  facet_grid( ~life.stage) +
+  scale_fill_viridis() +
+  theme(axis.text.x = element_text(angle = 90),
+        axis.text = element_text(size=6)) +
+    labs(title = "Salmon achieved number of individuals measured at national level", subtitle = "Table 2.3. & 1E  - Diadromous")
 ```
 

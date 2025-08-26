@@ -1,0 +1,446 @@
+---
+title: "Make prediction grid for length at age models"
+author: "Viktor Thunell"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+format: 
+  html:
+    embed-resources: true
+    fig-width: 8
+    #fig-asp: 0.618
+knitr: 
+  opts_chunk:
+    fig.align: center
+editor: source
+execute: 
+  echo: true
+  eval: true
+  cache: false
+---
+
+## Introduction
+
+Make an evenly spaced UTM prediction grid with all spatially varying covariates for the stomach content data and biomass estimate data for the for diet and the biomass data
+
+```{r lib}
+#| message: false
+
+pkgs <- c("tidyverse", "tidylog", "sp", "raster", "devtools", "RCurl", "sdmTMB", "viridis", "terra", "ncdf4", "chron", "ncdf4", "tidync", "tidyterra") 
+
+if(length(setdiff(pkgs, rownames(installed.packages()))) > 0){
+
+    install.packages(setdiff(pkgs, rownames(installed.packages())), dependencies = T)
+  
+}
+
+invisible(lapply(pkgs, library, character.only = T))
+
+# Source code for map plots
+devtools::source_url("https://raw.githubusercontent.com/VThunell/diasp-lht/main/R/functions/map-plot.R")
+# Packages not on CRAN
+# devtools::install_github("seananderson/ggsidekick") # not on CRAN 
+library(ggsidekick)
+theme_set(theme_sleek())
+
+# Set path
+home <- here::here()
+```
+
+## Read stomach data
+
+```{r}
+#| message: false
+#| warning: false
+#| cache: false
+
+d <- readRDS(file = paste0(home,"/data/data-for-2-2/salmon-laa_2025-06-19.RData")) %>%
+  rename(year = fi_year,
+         site = sai_location,
+         sea.age = sea_age_year,
+         juv.age = juvenile_age_year,
+         lat = fisa_y_4326,
+         lon = fisa_x_4326) %>%
+  #filter out non-aged individuals (~34000 individuals)
+  filter(!(is.na(sea.age) & is.na(juv.age))) %>%
+  add_utm_columns(ll_names = c("lon", "lat"), utm_crs = 32633) 
+
+glimpse(d)
+```
+
+
+## Make the grid
+Make a grid based on the extend of the legth at age salmon data
+
+```{r make pred grid}
+
+x <- d$X
+y <- d$Y
+z <- chull(x, y)
+
+coords <- cbind(x[z], y[z])
+
+coords <- rbind(coords, coords[1, ]) # close the loop
+
+plot(coords[, 1] ~ coords[, 2]) # plot hull
+
+sp_poly <- sp::SpatialPolygons(
+  list(sp::Polygons(list(sp::Polygon(coords)), ID = 1))
+  )
+
+sp_poly_df <- sp::SpatialPolygonsDataFrame(sp_poly,
+                                           data = data.frame(ID = 1)
+                                           )
+cell_width <- 10 # increased from 3 to reduce prediction/index processing time and the NEMO hindcast has a spatial resolution of 3.7      
+
+# d |>
+#   summarise( n = n(), .by = month) # march is the most common month in the data. Use march for predictions
+
+pred_grid_tmp <- expand.grid(
+  X = seq(min(d$X), max(d$X), cell_width),
+  Y = seq(min(d$Y), max(d$Y), cell_width),
+  year = c(1980:2023)) #|>
+  #mutate(month = 3)
+
+ggplot(pred_grid_tmp |> filter(year == 2019), aes(X, Y)) +
+  geom_point(size = 0.1) +
+  theme_void() +
+  coord_sf()
+
+sp::coordinates(pred_grid_tmp) <- c("X", "Y")
+
+inside <- !is.na(sp::over(pred_grid_tmp, as(sp_poly_df, "SpatialPolygons")))
+
+pred_grid_tmp <- pred_grid_tmp[inside, ]
+
+pred_grid_tmp <- as.data.frame(pred_grid_tmp)
+
+ggplot(data = filter(pred_grid_tmp, year == 1999), aes(X*1000, Y*1000)) + 
+  geom_point(size = 0.001, alpha = 0.5) +
+  NULL
+
+plot_map +
+  geom_point(data = filter(pred_grid_tmp, year == 1999), aes(X*1000, Y*1000), size = 0.001, alpha = 0.5) +
+  NULL
+
+# Add lat and lon
+# Need to go from UTM to lat long for this one...
+# https://stackoverflow.com/questions/30018098/how-to-convert-utm-coordinates-to-lat-and-long-in-r
+xy <- as.matrix(pred_grid_tmp |> dplyr::select(X, Y) |> mutate(X = X*1000, Y = Y*1000))
+v <- vect(xy, crs="+proj=utm +zone=33 +datum=WGS84  +units=m")
+y <- project(v, "+proj=longlat +datum=WGS84")
+lonlat <- geom(y)[, c("x", "y")]
+
+pred_grid_tmp$lon <- lonlat[, 1]
+pred_grid_tmp$lat <- lonlat[, 2]
+
+ggplot(filter(pred_grid_tmp, year == 1999), aes(lon, lat)) + geom_point()
+
+# Add depth now to remove islands and remaining land
+# https://gis.stackexchange.com/questions/411261/read-multiple-layers-raster-from-ncdf-file-using-terra-package
+# https://emodnet.ec.europa.eu/geoviewer/
+dep_raster <- terra::rast(paste0(home, "/data/environment/Mean depth natural colour (with land).nc"))
+class(dep_raster)
+crs(dep_raster, proj = TRUE)
+
+plot(dep_raster)
+
+pred_grid_tmp$depth <- terra::extract(dep_raster, pred_grid_tmp |> dplyr::select(lon, lat))$elevation
+
+ggplot(pred_grid_tmp, aes(lon, lat, color = depth*-1)) + 
+  geom_point()
+
+pred_grid_tmp$depth <- pred_grid_tmp$depth*-1 # To make depth from negative elevation in relation to sea surface??
+
+pred_grid_tmp <- pred_grid_tmp |> drop_na(depth)
+
+pred_grid_tmp |> 
+  filter(year == 1999) |> 
+  drop_na(depth) |> 
+  #mutate(water = ifelse(depth < 0.00000001, "N", "Y")) |> 
+  ggplot(aes(X*1000, Y*1000, fill = depth)) + 
+  geom_raster() +
+  NULL
+
+plot_map_Euro + 
+  geom_point(data = pred_grid_tmp, aes(X*1000, Y*1000), size = 0.001) + 
+  geom_sf() #Simple feature (https://r-spatial.github.io/sf/articles/sf1.html)
+
+```
+
+
+## Combine oxy, temp, and sal from SMHI hindcast (and models of Copernicus and hindcast) for the pred_grid
+
+```{r}
+# read Hindcast data
+hindenv_df <- readRDS(file = paste0(home, "/data/environment/hindcast_1961_2017.rds")) |>
+  filter(year > 1962) |>
+  mutate(yearmonth = (year-1963)*12+month)
+
+# We need to model the hindcast for year 2018-2023 and we use march as month.
+
+# make a pred grid for those late observations
+predhind <- hindenv_df |>
+  distinct(lat, lon) |>
+  replicate_df(time_name = "yearmonth", time_values = seq((2018-1963)*12+3,(2023-1963)*12+3, by=12)) |>
+  mutate( model = as_factor("hindcast"),
+          year = floor(1963+(yearmonth/12)),
+          month = yearmonth %% 12) |> # mod, i.e. the remainder of an integer divide (here month)
+  add_utm_columns(ll_names = c("lon", "lat"), utm_crs = 32633)
+
+# Predict using the models for oxy, sal and temp. For reference see 1c_combine_oxysaltemp_data.qmd
+
+# load model for oxygen
+Mod_oxy <- readRDS(paste0(home, "/R/prepare-data/Mod_oxy.rds"))
+# load model for salinity
+Mod_sal <- readRDS(paste0(home, "/R/prepare-data/Mod_sal.rds"))
+# load model for temperature
+Mod_temp <- readRDS(paste0(home, "/R/prepare-data/Mod_temp.rds"))
+
+oxypreds <- predict(Mod_oxy, newdata = predhind) |> mutate(oxy = est) |> dplyr::select(lat, lon, year, month, yearmonth, oxy)
+salpreds <- predict(Mod_sal, newdata = predhind) |> mutate(sal = est) |> dplyr::select(lat, lon, year, month, yearmonth, sal)
+temppreds <- predict(Mod_temp, newdata = predhind) |> mutate(temp = est) |> dplyr::select(lat, lon, year, month, yearmonth, temp)
+
+# Combine hindcast preds for 2018-2023 with hindcast (1963-2017)
+hindcast_allyears <- left_join(salpreds, oxypreds) |> left_join(temppreds) |> 
+  bind_rows(hindenv_df |> dplyr::select(temp, sal, oxy, lat, lon, year, month, yearmonth))
+
+map(hindcast_allyears, ~sum(is.na(.))) # No NAs
+hindcast_allyears |> 
+  summarise(nobs = n(), .by = c(month, year)) |>
+  arrange(year)
+          
+hindcast_allyears |>
+  summarise(mean_oxy = mean(oxy), .by = c(year, month)) |>
+  ggplot() +
+  geom_line(aes(year, mean_oxy, color = factor(month)), linetype = "dashed")
+
+hindcast_allyears |>
+  summarise(mean_temp = mean(temp), .by = c(year, month)) |>
+  ggplot() +
+  geom_line(aes(year, mean_temp, color = factor(month)), linetype = "dashed")
+```
+
+# Extract oxy, sal and temp from hindcast_allyears to pred_grid
+```{r}
+# add yearmonth
+pred_grid_tmp2 <- pred_grid_tmp |>
+  mutate(yearmonth = (year-1963)*12+month)
+
+# function for extraction based on yearmonth
+ext_envdat <- function(ayearmonth)  {
+
+  ext_y = pred_grid_tmp2 |> filter(yearmonth == ayearmonth) |> dplyr::select(lon, lat) # coords from the stomach data, can only be lon and lat for extract()
+  
+  hindcast_allyears |>
+    filter(yearmonth == ayearmonth) |>
+    as_spatraster(xycols = c(2,1), crs = "WGS84", digits = 2) |>
+    terra::extract(ext_y) |> 
+    dplyr::select(oxy,sal,temp) |>
+    bind_cols(pred_grid_tmp2 |> filter(yearmonth == ayearmonth)) 
+    
+}
+
+# Use the ext_envdat function to extract env covs values to the observations for hindcast
+pred_grid_tmp2 <- unique(pred_grid_tmp2 |> pull(yearmonth)) |> 
+  map(\(x) ext_envdat(x)) |>
+  list_rbind()
+
+# Many observations lie just outside the hincast_allyears raster extent causing NA values of the covariates
+theNAs <- pred_grid_tmp2 |> filter(is.na(oxy) | is.na(sal) | is.na(temp))
+theNAs |> dplyr::select(lat,lon) |> distinct() |> summarise(n = n())# 427 latlon combos that are outside the hindcast extent
+# ... and they're along the coast which seems reasonable
+plot_map_fc +
+  geom_point(data = unique(theNAs |> dplyr::select(Y,X)), aes(X*1000, Y*1000)) +
+  theme_sleek(base_size = 6) + 
+  geom_sf() 
+# We give them values based on the closest value in the hindcast 
+# the 18300 unique hindcast latlon from which we can use get new lat lon to extract to predgrid with
+hc_ull = hindcast_allyears |> filter(yearmonth == 1) |> dplyr::select(lon,lat)
+
+# get the nearest neighbor
+pl <- unique(theNAs |> dplyr::select(lon,lat) ) |>
+  distance( y = hc_ull, lonlat = TRUE) 
+
+# select which row in hc_ull has the smallest distance to each of theNAs
+pl2 <- hc_ull[apply(pl, 1, FUN = which.min),] # cf a lengthy and slow dplyr version
+
+# combine the real lat lons with their hc_ull corresponding neighbors, temporarily rename real lat lon for a left_join below.
+pl3 <- bind_cols(unique(theNAs |> dplyr::select(lon,lat) |> rename(reallat = lat,
+         reallon = lon)), pl2 )
+
+# looks alright
+plot_map_fc +
+  geom_point(data = pl3 |> add_utm_columns(ll_names = c("reallon", "reallat"), utm_crs = 32633), aes(X*1000, Y*1000), color = "blue") +
+  geom_point(data = pl3 |> add_utm_columns(ll_names = c("lon", "lat"), utm_crs = 32633), aes(X*1000, Y*1000), color = "red", alpha = 0.5) +
+  theme_sleek(base_size = 6) + 
+  geom_sf() 
+
+# left join in the temporary pl3 latlons
+pl4 <- left_join(theNAs |> rename(reallat = lat, reallon = lon), pl3)
+
+# left join in the covariates based on nearest neighbor lat lon and yearmonth
+pl5 <- pl4 |> dplyr::select(-oxy,-sal,-temp,-year) |> 
+  left_join(hindcast_allyears)
+
+pred_grid_tmp3 <- pl5 |> 
+  dplyr::select(-lat,-lon) |> rename(lat = reallat, lon = reallon) |>
+  bind_rows(pred_grid_tmp2 |> filter(!is.na(oxy) | !is.na(sal) | !is.na(temp)))
+
+# all are there?(!)
+pred_grid_tmp2 |> summarise(n()) == pred_grid_tmp2 |> summarise(n())
+
+# no NAs left
+pred_grid_tmp3  |> filter(is.na(oxy) | is.na(sal) | is.na(temp))
+
+# check plots
+plot_map_fc +
+  geom_tile(data = pred_grid_tmp3, aes(X*1000, Y*1000, fill = oxy), alpha = 0.5) +
+  theme_sleek(base_size = 6) + 
+  geom_sf() 
+  
+plot_map_fc +
+  geom_tile(data = pred_grid_tmp3, aes(X*1000, Y*1000, fill = temp), alpha = 0.5) +
+  theme_sleek(base_size = 6) + 
+  geom_sf() 
+
+plot_map_fc +
+  #geom_tile(data = pred_grid_tmp3 |> filter(year %in% c(seq(1963,2023,10))), aes(X*1000, Y*1000, fill = sal)) +
+  geom_tile(data = pred_grid_tmp3 |> filter(year == 2023), aes(X*1000, Y*1000, fill = sal)) +
+  theme_sleek(base_size = 6) + 
+  facet_wrap(~year) +
+  scale_fill_viridis() +
+  geom_sf() 
+
+plot_map_fc +
+  geom_tile(data = pred_grid_tmp3 |> filter(year %in% c(2015:2022)), aes(X*1000, Y*1000, fill = temp)) +
+  theme_sleek(base_size = 6) + 
+  facet_wrap(~year) +
+  geom_sf() 
+```
+
+## Add cod densities, only for post 1992!
+```{r add cod density}
+# # for the Mod, the fr data is instead used to scale the prediction grid
+# data_stats <- read_csv(paste0(home, "/data/survey/data_stats.csv")) 
+# m3 <- readRDS(paste0(home, file = "/data/survey/m3.rds"))
+
+# REFIT THIS MODEL IF USING COD DENSITIES
+
+# # This model was fit with an older version of sdmTMB before internal
+# #  handling of `extra_time` was simplified. Please refit your model before
+# #  predicting on it (or install version 0.5.0 or 0.5.0.9000).
+# # d_stats is used to scale the prediction grid when predictiong cod densities
+# data_stats_st <- data_stats |>
+#   summarise(depth_mean = mean(depth, na.omit = TRUE),
+#             depth_sd = sd(depth),
+#             sal_mean = mean(sal, na.omit = TRUE),
+#             sal_sd = sd(sal),
+#             oxy_mean = mean(oxy, na.omit = TRUE),
+#             oxy_sd = sd(oxy),
+#             temp_mean = mean(temp, na.omit = TRUE),
+#             temp_sd = sd(temp))
+# 
+# df_m3 <- pred_grid_tmp3 |>
+#   filter(between(year, 1993, 2021)) |>
+#   drop_na(oxy,
+#           sal,
+#           temp) |>
+#   mutate(depth = ifelse(depth < 0, 0, depth),
+#          depth_sc = (depth - data_stats_st$depth_mean)/data_stats_st$depth_sd,
+#          oxy_sc = (oxy - data_stats_st$oxy_mean)/data_stats_st$oxy_sd,
+#          sal_sc = (sal - data_stats_st$sal_mean)/data_stats_st$sal_sd,
+#          temp_sc = (temp - data_stats_st$temp_mean)/data_stats_st$temp_sd,
+#          depth_sq = depth_sc^2,
+#          temp_sq = temp_sc^2,
+#          year_f = as.factor(year),
+#          quarter_f = as.factor(1))
+# 
+# # Predict cod cpue density with model model from Max  
+# cpue_cod <- predict(m3, newdata = df_m3) |>
+#   mutate(log_density_cod = est) |>
+#   dplyr::select(lat, lon, month, year, log_density_cod) 
+# 
+# pred_grid_tmp4 <- pred_grid_tmp3 |>
+#   left_join(cpue_cod, by = c("month", "year", "lon", "lat"))
+
+```
+
+## Add ICES areas
+```{r ices areas}
+pred_grid_tmp4 <- pred_grid_tmp3
+# https://stackoverflow.com/questions/34272309/extract-shapefile-value-to-point-with-r
+# https://gis.ices.dk/sf/
+shape <- shapefile(paste0(home, "/data/survey/ICES_StatRec_mapto_ICES_Areas/StatRec_map_Areas_Full_20170124.shp"))
+head(shape)
+
+pts <- SpatialPoints(cbind(pred_grid_tmp3$lon, pred_grid_tmp3$lat), 
+                     proj4string = CRS(proj4string(shape)))
+
+pred_grid_tmp4$subdiv <- over(pts, shape)$Area_27
+
+# Rename subdivisions to the more common names and do some more filtering (by sub div and area)
+sort(unique(pred_grid_tmp4$subdiv))
+
+pred_grid_tmp4 <- pred_grid_tmp4 |> 
+  mutate(sub_div = factor(subdiv),
+         sub_div = fct_recode(subdiv,
+                              "24" = "3.d.24",
+                              "25" = "3.d.25",
+                              "26" = "3.d.26",
+                              "27" = "3.d.27",
+                              "28" = "3.d.28.1",
+                              "28" = "3.d.28.2",
+                              "29" = "3.d.29"),
+         sub_div = as.character(sub_div)) |> 
+  filter(sub_div %in% c("24", "25", "26", "27", "28", 2)) |> 
+  filter(lat > 54 & lat < 59 & lon < 22)
+
+# Add ICES rectangles
+pred_grid_tmp4$ices_rect <- mapplots::ices.rect2(lon = pred_grid_tmp4$lon, lat = pred_grid_tmp4$lat)
+
+plot_map +
+  geom_raster(data = filter(pred_grid_tmp4, year == 1999), aes(X*1000, Y*1000, fill = depth)) +
+  facet_wrap(~sub_div)
+
+pred_grid_done <- pred_grid_tmp4 |> dplyr::select(-subdiv)
+
+```
+
+## Check
+
+```{r}
+#zero valued env variables
+zeropgplot <- pred_grid_done |>
+  pivot_longer(cols=c(depth, oxy, sal, temp), names_to = "variable", values_to = "value" ) |>
+  mutate(value_sc = scale(value), .by = variable) #|>
+  #filter(value < 0)
+
+plot_map +
+  geom_raster(data = zeropgplot |> filter(variable == "oxy") |> filter(year %in% seq(1998,2023,5)), aes(X*1000, Y*1000, fill = value_sc)) +
+  facet_wrap(~year) +
+  scale_fill_viridis()
+
+plot_map +
+  geom_raster(data = zeropgplot |> filter(variable == "sal") |> filter(year %in% seq(1998,2023,5)), aes(X*1000, Y*1000, fill = value_sc)) +
+  facet_wrap(~year) +
+  scale_fill_viridis()
+
+plot_map +
+  geom_raster(data = zeropgplot |> filter(variable == "temp") |> filter(year %in% seq(1998,2023,5)), aes(X*1000, Y*1000, fill = value_sc)) +
+  facet_wrap(~year) +
+  scale_fill_viridis() # 1996 and 2006 was cold years
+
+# # cod density
+# plot_map +
+#   geom_tile(data = pred_grid_done |> filter(between(year, 1993,2021)) |> mutate(decade = round(year/10) * 10), aes(X*1000, Y*1000, fill = exp(log_density_cod))) +
+#   scale_fill_viridis(trans = "sqrt") +
+# facet_wrap(~decade)
+
+
+```
+
+## Save
+
+```{r save}
+#saveRDS(pred_grid_done, file = paste0(home, "/data/pred_grid.rds"))
+saveRDS(pred_grid_tmp, file = paste0(home, "/data/pred_grid.rds"))
+```
