@@ -1,0 +1,128 @@
+---
+title: "Salmon VBGF model v4"
+author: "Viktor Thunell" 
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+format: 
+  html:
+    code-fold: true
+    code-summary: "Show code"
+    page-layout: full
+    embed-resources: true
+    toc: true
+knitr: 
+  opts_chunk:
+    fig.align: center
+    out-width: 80%
+editor: source
+execute: 
+  echo: true
+  eval: true
+  cache: true
+---
+
+## Load libraries
+```{r libs}
+#| message: false
+#| warning: false
+#| cache: false
+
+# Load libraries, install if needed
+pkgs <- c("tidyverse", "tidylog", "devtools","viridis","nls.multstart", "broom", "patchwork", "nimble", "coda", "boot", "tidybayes","bayesplot")
+
+if(length(setdiff(pkgs,rownames(installed.packages()))) > 0){
+    install.packages(setdiff(pkgs, rownames(installed.packages())), dependencies = T)
+  }
+
+invisible(lapply(pkgs, library, character.only = T))
+
+options(ggplot2.continuous.colour = "viridis")
+theme_set(theme_light()) # check why global theme option not working when rendering
+# Set path
+
+home <- here::here()
+```
+
+## Read data
+```{r}
+#| message: false
+#| warning: false
+#| cache: false
+
+sallaa <- readRDS(file = paste0(home,"/data/data-for-2-2/salmon-laa_2025-05-02.RData")) %>%
+  #filter out non-aged individuals (~34000 individuals)
+  filter(!(is.na(age.sea) & is.na(age.sm))) #%>% 
+  #rowwise() %>% # rowwise needed for non vectorised function like sum
+  # create life stage and total age columns
+  # mutate(age.type = case_when(age.sea == 0 | is.na(age.sea) ~ "smolt.only",
+  #                              age.sea > 0 & age.sm > 0 ~ "both",
+  #                              age.sm == 0 | is.na(age.sm) ~ "sea.only",
+  #                              .default = NA),
+  #   #mutate(age.type = if_else(age.sea == 0 | is.na(age.sea), "smolt", "sea"),
+  #        age.tot = sum(age.sea,age.sm, na.rm = TRUE)) %>%
+  #ungroup()
+```
+
+For now I will use the "both" type only.
+```{r}
+# Create a new dataset and reduce number of obs to make models faster
+sallaa2 <- sallaa %>%
+  filter(age.type == "both") %>% 
+  slice_sample(n = 40000)
+
+sallaa2 %>%
+  drop_na(sex) %>%
+  ggplot(aes(age.tot, length, color = sex)) +
+  geom_point() +
+  facet_wrap(~sex) +
+  scale_x_continuous(breaks = seq(0, 13, 1) )
+
+# how old can a salmon get? Is 12 possible or have smolt age been included in sea age?
+sallaa2 %>%
+  filter(age.tot > 10)
+```
+
+# Hists of age and length
+```{r}
+
+# If dropping all inds where both sea and sm age is NA 
+sallaa2 %>% 
+  ggplot() +
+  geom_density(aes(x = age.tot), fill = "deeppink", alpha = 0.5) +
+  xlim(0, 13) +
+  
+sallaa2 %>% 
+  ggplot() + 
+  geom_density(aes(x = length), fill = "deeppink", alpha = 0.5)
+  
+sallaa2 %>% 
+  ggplot() +
+  geom_density(aes(x = length, fill = factor(age.tot)), alpha = 0.5) +
+  #geom_histogram(aes(x = length)) +
+  facet_wrap(~age.tot, scales = "free")
+```
+
+**NOTE in code below: Ive silenced warmings to make html manageble when "logProb of data node length[1:nobs]: logProb less than -1e12."**
+
+# 1. Fabens model w Multivariate normal prior 
+
+### a. Spatial only 
+
+```{r}
+fab_vb1a.code<- nimbleCode({
+  
+  # likelihood
+  for(i in 1:nobs){
+    dl[i] ~ dXXXX(mu[i], )
+    mu[i] <-
+    
+	}
+    
+    
+    
+        }
+
+    })
+```
+
+
+```{r}
