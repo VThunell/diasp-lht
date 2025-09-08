@@ -1,0 +1,1113 @@
+---
+title: "Salmon spatial growth model v1"
+author: "Viktor Thunell" 
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+format: 
+  html:
+    code-fold: true
+    code-summary: "Show code"
+    page-layout: full
+    embed-resources: true
+    toc: true
+knitr: 
+  opts_chunk:
+    fig.align: center
+    out-width: 80%
+editor: source
+execute: 
+  echo: true
+  eval: true
+  cache: true
+---
+
+## Load libraries
+```{r libs}
+#| message: false
+#| warning: false
+#| cache: false
+
+# Load libraries, install if needed
+pkgs <- c("tidyverse", "tidylog", "devtools","viridis","nls.multstart", "broom", "patchwork", "coda", "boot", "tidybayes","bayesplot", "nimbleHMC", "here")
+
+# remotes::install_github("nimble-dev/nimble", ref = "devel", subdir = "packages/nimble")
+
+if(length(setdiff(pkgs,rownames(installed.packages()))) > 0){
+    install.packages(setdiff(pkgs, rownames(installed.packages())), dependencies = T)
+  }
+
+invisible(lapply(pkgs, library, character.only = T))
+
+options(ggplot2.continuous.colour = "viridis")
+theme_set(theme_light()) # check why global theme option not working when rendering
+# Set path
+
+home <- here::here()
+```
+
+## Read data
+
+The data incldes Franch, Swedish and Finnish salmon. I filter out non-aged individuals (where sea and smolt age is not known). For now I only use the data where both sea and smolt age is known (age.type variable). 
+
+```{r}
+#| message: false
+#| warning: false
+#| cache: false
+
+sallaa <- readRDS(file = paste0(home,"/data/data-for-2-2/salmon-laa_2025-06-11.RData")) %>%
+  #filter out non-aged individuals (~34000 individuals)
+  filter(!(is.na(sea_age_year) & is.na(juvenile_age_sm))) #%>% 
+  #filter(age.type == "both")
+
+```
+
+# Hists of age and length
+```{r}
+
+# Length at age for makes and females
+sallaa %>%
+  drop_na(sex) %>%
+  ggplot(aes(age.tot, length, color = sex)) +
+  geom_point() +
+  facet_wrap(~sex) +
+  scale_x_continuous(breaks = seq(0, 13, 1) ) +
+  labs(x = "age")
+
+# Length at age for makes and females
+sws <- sallaa %>% filter(age.type == "smolt.only") %>% distinct(site) %>% pull(site) 
+
+sallaa %>%
+  drop_na(age.type) %>%
+  ggplot(aes(age.tot, length, color = age.type)) +
+  geom_point() +
+  facet_wrap(~age.type) +
+  scale_x_continuous(breaks = seq(0, 13, 1) ) +
+  theme_light() +
+  labs(x = "age")
+
+sallaa %>%
+  drop_na(age.type) %>%
+  #filter(site %in% sws) %>%
+  ggplot(aes(age.tot, length, color = age.type)) +
+  geom_point(alpha = 0.5) +
+  facet_wrap(~spat.unit) +
+  labs(x = "age")
+
+sallaa %>%
+  drop_na(age.type) %>%
+  filter(age.type %in% c("both", "smolt.only")) %>%
+  ggplot(aes(age.tot, length, color = age.type)) +
+  geom_point(alpha = 0.5) +
+  facet_wrap(~spat.unit) +
+  labs(x = "age")
+
+sallaa %>%
+  ggplot(aes(age.tot, length, color = age.type, shape = sex)) +
+  geom_point( alpha = 0.5) +
+  facet_wrap(~spat.unit) +
+  scale_x_continuous(breaks = seq(0, 13, 1) )  +
+  labs(x = "age")
+
+# density by age and length
+sallaa %>% 
+  ggplot() +
+  geom_density(aes(x = age.tot), fill = "deeppink", alpha = 0.5) +
+  xlim(0, 13) +
+  
+sallaa %>%
+  ggplot() + 
+  geom_density(aes(x = length), fill = "deeppink", alpha = 0.5)
+  
+# histogram of length by spatial unit
+sallaa %>% 
+  ggplot() +
+  #geom_density(aes(x = length, fill = spat.unit), alpha = 0.5) +
+  geom_histogram(aes(x = length, fill = spat.unit)) +
+  facet_wrap(~spat.unit, scales = "free_y")
+
+# density of length by age and sex
+sallaa %>% 
+  ggplot() +
+  geom_density(aes(x = length, fill = factor(sex)), alpha = 0.5) +
+  facet_wrap(~age.tot, scales = "free")
+
+# density of length by age and sex
+sallaa %>% 
+  filter(!age.type == "sea.only") %>%
+  ggplot() +
+  geom_density(aes(x = age.sm, fill = factor(sex)), alpha = 0.5) +
+  facet_wrap(~spat.unit, scales = "free")
+
+```
+
+## 1. three parameter von Bert. vs four parameter Schnute
+
+### a. von Bertalanffy
+
+Using a multivariate normal prior on VGBF params (LKJ prior). The sex of non-sexed individuals (sex = NA are ~30%, mainly from France) are estimated in the model.
+
+#### Model
+```{r}
+vbgf1.code <- nimbleCode({
+  # likelihood
+  for(i in 1:nobs){
+    length[i] ~ dnorm(mu[i], sd = sigma)
+    mu[i] <- par[1] * (1-exp(-par[2] * (age.tot[i]-par[3])))
+  }
+
+  # priors
+  sigma ~ dexp(1/100)
+  
+  # LKJ prior on correlation matrix, see NIMBLE manual p45.
+  Ustar[1:npars,1:npars] ~ dlkj_corr_cholesky(1.3, npars) # eta = 1.3
+  U[1:npars,1:npars] <- uppertri_mult_diag(Ustar[1:npars, 1:npars], sig_par[1:npars])
+  
+   par[1:npars] ~ dmnorm(mu_par[1:npars], cholesky = U[1:npars, 1:npars], prec_param = 0)
+  
+  # mu and 2*sd from fishbase
+  mu_par[1] ~ dnorm(1378, sd = 2*139) 
+  mu_par[2] ~ dnorm(0.43, sd = 2*0.28)
+  mu_par[3] ~ dnorm(-1.21, sd = 1.40) 
+  # mu and 2*sd from fishbase
+  # sig_par[1] ~ dlnorm(log(2*139),sdlog=1)
+  # sig_par[2] ~ dlnorm(log(2*0.28),exp(0.28))
+  # sig_par[3] ~ dlnorm(log(2*1.40),1)
+  sig_par[1] ~ dexp(1/(139/4))
+  sig_par[2] ~ dexp(1/(0.28/4))
+  sig_par[3] ~ dexp(1/(1.40/4))
+
+  })
+
+# Function creating the Cholesky of the covar. matrix (p45 Nimble manual)
+uppertri_mult_diag <- nimbleFunction(
+  run = function(mat = double(2), vec = double(1)) {
+    returnType(double(2))
+    p <- length(vec)
+    out <- matrix(nrow = p, ncol = p, init = FALSE)
+    for(k in 1:p)
+      out[ , k] <- mat[ , k] * vec[k]
+    return(out)
+   # turn off buildDerivs for the i index
+}, buildDerivs = list(run = list(ignore = c('k')))) 
+
+npars <- 3
+
+# initial values generating function
+inits <- function(){
+  list(mu_par = c(rnorm(1,1000,0),
+                  rnorm(1,0.4,0.3),
+                  rnorm(1,-1.2,1.4)),
+       sig_par = c(rexp(1,1/(139/4)),
+                   rexp(1,1/(0.28/4)),
+                   rexp(1,1/(1.40/4))))}
+
+data <- sallaa
+
+# build model
+vbgf1.model <- nimbleModel(vbgf1.code,
+                           constants = list(npars=npars,
+                                            nobs = nrow(data)),
+                           inits=inits(),
+                           data = data %>% select(age.tot,length),
+                           buildDerivs = TRUE)
+
+```
+
+#### Configure, Build & Compile model & HMC
+
+```{r}
+# configure hmc
+vbgf1.confhmc <- configureHMC(vbgf1.model, 
+                               monitors = c("par", "Ustar"),
+                               enableWAIC = TRUE)
+  
+# build mcmc (use buidlHMC() when not using configureHMC())
+vbgf1.hmc <- buildMCMC(vbgf1.confhmc)
+
+# compile model
+vbgf1.c <- compileNimble(vbgf1.model)
+
+# compile mcmc  and specify the project model
+vbgf1.hmcc <- compileNimble(vbgf1.hmc)#, project = vbgf2a.c)
+
+```
+
+#### HMC Samples
+
+```{r}
+#help(NUTS)
+
+# vbgf1.samp <- runMCMC(vbgf1.hmcc, niter = 5000, nburnin = 3000, nchains = 2, samplesAsCodaMCMC = TRUE, WAIC=TRUE)
+
+```
+
+#### Check/plot samples
+
+```{r}
+samp <- vbgf1.samp$samples
+summary(samp)
+
+s = nrow(samp$chain1)
+cols <- grep("^Ustar",colnames(as.matrix(samp)))
+Ustar_sample <- matrix(samp$chain1[s, cols], npars, npars)
+corrMatrix_sample <- crossprod(Ustar_sample)  ## i.e., t(Ustar_sample) %*% Ustar_sample
+corrMatrix_sample
+
+#length at age for the inds where sex is assigned by the model.
+# data %>%
+#   bind_cols(sex2 = samp$sex) %>%
+#   filter(row_number() %in% which(is.na(data$sex))) %>%
+#   ggplot(aes(age.tot, length, color = factor(sex2))) +
+#   geom_point()
+
+# deselect the sex nodes to reduce sample object size
+# acfnodes <- colnames(samp$samples$chain1)[-which(
+#   str_detect(colnames(samp$samples$chain1), "sex"))]
+# samp$samples[,c(acfnodes)]
+
+# Autocorrelation plots
+samp %>%
+#samp$samples[,c(acfnodes)] %>%
+  autocorr.diag(lags = seq(0,500,1)) %>%
+  as_tibble(rownames = "lag") %>%
+  pivot_longer(cols = contains("par"), names_to = "node" , values_to = "corr") %>%
+  mutate(lag = as.numeric(str_extract(lag, "\\d+"))) %>%
+  ggplot() +
+  geom_bar(aes(x = lag, y = corr), stat = "identity") +
+  facet_wrap(~node) +
+  theme_light() +
+
+samp %>%
+  autocorr.diag(lags = seq(0,500,1)) %>%
+  as_tibble(rownames = "lag") %>%
+  # drop the 0 valued Ustar variables (NaN corrs)
+  select_if(~!any(is.na(.))) %>%
+  pivot_longer(cols = c(!contains("par"), -lag), names_to = "node" , values_to = "corr") %>%
+  mutate(lag = as.numeric(str_extract(lag, "\\d+"))) %>%
+  ggplot() +
+  geom_bar(aes(x = lag, y = corr), stat = "identity") +
+  facet_wrap(~node) +
+  theme_light()
+
+# Trace plots
+pn = 16 # number of plots in each frame
+n = ncol(as.matrix(samp$chain1)) # number of nodes
+
+# loop trace through nodes
+for(i in seq(0, n, by = pn)){
+  m = if_else(i != pn*( n %/% pn), i+pn, i + n %% pn)
+  print(mcmc_trace(samp, pars = vars(i:m)))
+}
+
+gelman.diag(samp$samples[1:2,])
+effectiveSize(samp)
+
+vbgf1a.samp$samples %>%
+  gather_draws(par[spat.unit,par]) %>%
+  #mutate(val = exp(.value)) %>%
+  ggplot() +
+  geom_density(aes(x = .value, color = factor(par))) + # age parameter
+  facet_wrap(par~spat.unit, scales = "free", nrow = 3) +
+  theme_light()
+```
+
+### b. Schnute
+
+#### Model
+
+Here, the prior P parameter of the Schnute is considered uniform and therefore outside of the LKJ (which is mulitvariate normal).
+```{r}
+schnu1.code <- nimbleCode({
+  # likelihood
+  for(i in 1:nobs){
+    length[i] ~ dnorm(mu[i], sd = sigma)
+    mu[i] <- ( par[1]^P + (par[2]^P - par[1]^P) * ( (1-exp(-par[3]*(age.tot[i]-A1))) / (1-exp(-par[3]*(A2-A1))) ) )^(1/P)
+        }
+  
+  # Priors 
+  sigma ~ dunif(0, 250)
+  
+  # LKJ prior on correlation matrix, see NIMBLE manual p45.
+  Ustar[1:npars,1:npars] ~ dlkj_corr_cholesky(1.3, npars) # eta = 1.3
+  U[1:npars,1:npars] <- uppertri_mult_diag(Ustar[1:npars, 1:npars], sig_par[1:npars])
+  
+  par[1:npars] ~ dmnorm(mu_par[1:npars], cholesky = U[1:npars, 1:npars], prec_param = 0)
+  
+  mu_par[1] ~ dnorm(500, sd = 250) # L1
+  mu_par[2] ~ dnorm(1300, sd = 100) # p
+  mu_par[3] ~ dnorm(0.43, sd = 0.4) # L2
+  
+  sig_par[1] ~ dexp(1/(250/4))
+  sig_par[2] ~ dexp(1/(100/4))
+  sig_par[3] ~ dexp(1/(0.4/4))
+  
+  P ~ dnorm(-1, 0.5) # 
+  # # Calculate Linf and t0
+  #Linf  <- ( (exp(par[1]*A2)*L2^par[2] - (exp(par[1]*A1)*L1^par[2])) / (exp(par[1]*A2) - exp(par[1]*A1)) )^(1/par[1])
+  #t0 <- A1 + A2 - (1/par[2])*log(Linf)
+
+})
+
+# Function creating the Cholesky of the covar. matrix (p45 Nimble manual)
+uppertri_mult_diag <- nimbleFunction(
+  run = function(mat = double(2), vec = double(1)) {
+    returnType(double(2))
+    p <- length(vec)
+    out <- matrix(nrow = p, ncol = p, init = FALSE)
+    for(k in 1:p)
+      out[ , k] <- mat[ , k] * vec[k]
+    return(out)
+   # turn off buildDerivs for the i index
+}, buildDerivs = list(run = list(ignore = c('k')))) 
+
+# initial values generating function (par[1:4] = L1,p,L2,K)
+inits <- function(){
+  list(mu_par = c(rnorm(1, 500, 0.01),
+                  #rnorm(1, -1, 0.01),
+                  rnorm(1, 1000, 0.01),
+                  rnorm(1, 0, 0.01)),
+       P = rnorm(1,-1,0.5),
+       sig_par = c(rexp(1,1/(50/4)),
+                   rexp(1,1/(100/4)),
+                   rexp(1,1/(0.4/4))))}
+
+data <- sallaa %>%
+  filter(!age.type == "sea.only")
+  
+npars <- 3
+A1 <- min(data$age.tot)
+A2 <- max(data$age.tot)
+
+# build model
+schnu1.model <- nimbleModel(schnu1.code,
+                        constants = list(npars=npars,
+                                         A1 = A1,
+                                         A2 = A2,
+                                         nobs = nrow(data)
+                                         #constraint_data = 1),
+                                         ),
+                        #inits=inits(),
+                        data = data %>% select(age.tot,length)
+                        ,buildDerivs = TRUE)
+                        
+```
+#### Fixing
+```{r}
+schnu1.model$getDependencies(c("par"))
+schnu1.model$initializeInfo()
+schnu1.model$simulate("sigma")
+schnu1.model$simulate("sig_par")
+schnu1.model$simulate("Ustar")
+schnu1.model$simulate("U")
+schnu1.model$sigma
+schnu1.model$U
+schnu1.model$Ustar
+schnu1.model$sig_par
+schnu1.model$simulate("mu_par")
+schnu1.model$mu_par
+schnu1.model$simulate("P")
+schnu1.model$P
+schnu1.model$simulate("par")
+schnu1.model$par
+schnu1.model$simulate("mu")
+schnu1.model$mu
+schnu1.model$simulate("length")
+schnu1.model$length
+```
+
+
+#### Configure, Build & Compile model & HMC
+
+```{r}
+# configure hmc
+schnu1.confhmc <- configureHMC(schnu1.model, 
+                               monitors = c("par", "P", "Ustar"),
+                               enableWAIC = TRUE)
+
+# build mcmc (use buidlHMC() when not using configureHMC())
+schnu1.hmc <- buildMCMC(schnu1.confhmc)
+
+# compile model
+schnu1.c <- compileNimble(schnu1.model)
+
+# compile mcmc  and specify the project model
+schnu1.hmcc <- compileNimble(schnu1.hmc)
+```
+
+#### HMC Samples
+
+```{r}
+#help(NUTS)
+
+schnu1.samp <- runMCMC(schnu1.hmcc, niter = 2000, nburnin = 1000, nchains = 2, samplesAsCodaMCMC = TRUE, WAIC = TRUE)
+
+#vbgf2a.samp <- readRDS(file = paste0(home,"/vbgf2a.samp_20250517"))
+```
+
+#### Check/plot samples
+
+```{r}
+samp <- schnu1.samp$samples
+summary(samp)
+
+# Autocorrelation plots
+samp %>%
+  autocorr.diag(lags = seq(0,500,1)) %>%
+  as_tibble(rownames = "lag") %>%
+  pivot_longer(cols = contains("par"), names_to = "node" , values_to = "corr") %>%
+  mutate(lag = as.numeric(str_extract(lag, "\\d+"))) %>%
+  ggplot() +
+  geom_bar(aes(x = lag, y = corr), stat = "identity") +
+  facet_wrap(~node) +
+  theme_light() +
+
+samp %>%
+  autocorr.diag(lags = seq(0,500,1)) %>%
+  as_tibble(rownames = "lag") %>%
+  # drop the 0 valued Ustar variables (NaN corrs)
+  select_if(~!any(is.na(.))) %>%
+  pivot_longer(cols = c(!contains("par"), -lag), names_to = "node" , values_to = "corr") %>%
+  mutate(lag = as.numeric(str_extract(lag, "\\d+"))) %>%
+  ggplot() +
+  geom_bar(aes(x = lag, y = corr), stat = "identity") +
+  facet_wrap(~node) +
+  theme_light()
+
+# Trace plots
+mcmc_trace(samp)
+
+gelman.diag(samp)
+effectiveSize(samp)
+
+samp %>%
+  gather_draws(par[n]) %>%
+  #mutate(val = exp(.value)) %>%
+  ggplot() +
+  geom_density(aes(x = .value, color = factor(n)))  +# age parameter
+  facet_wrap(~n, scales = "free", nrow = 3) +
+  theme_light() 
+samp %>%
+  gather_draws(P) %>%
+  #mutate(val = exp(.value)) %>%
+  ggplot() +
+  geom_density(aes(x = .value))  +
+  theme_light()
+  
+```
+
+
+```{r}
+samp %>%
+  gather_draws(par[np], P) %>%
+  median_qi() %>%
+  mutate(par = case_when(np == 1 ~ "L1",
+                         np == 2 ~ "L2",
+                         np == 3 ~ "K",
+                         .variable == "P" ~ "p"))  %>%
+  select(par, .value) %>%
+  pivot_wider(names_from = par, values_from = .value) %>%
+  expand_grid(age = seq(A1, A2, 1)) %>%
+  #rename(L1 = 1, p = 2, L2 = 3, K = 4) %>%
+  mutate(length = (L1^p + (L2^p - L1^p) * 
+         (1 - exp(-K*(age-A1))) / (1 - exp(-K*(A2-A1))) )^(1/p) ) %>%
+  ggplot() +
+  geom_point(data = data, aes(age.tot, length), alpha = 0.1, color = "lightblue") +
+  geom_line(aes(age, length)) +
+  theme_light() +
+  labs(title = "Schnute")
+```
+
+### c. WAIC and correlatiopns of vbgf vs schnute
+
+WAIC of the Schnute is higher than that of the VBGF.
+```{r}
+print("VBGF")
+vbgf1.samp$WAIC
+print("1-Linf, 2-K, 3-t0")
+samp <- vbgf1.samp$samples
+s = nrow(samp$chain1)
+cols <- grep("^Ustar",colnames(as.matrix(samp)))
+Ustar_sample <- matrix(samp$chain1[s, cols], npars, npars)
+crossprod(Ustar_sample)  ## i.e., t(Ustar_sample) %*% Ustar_sample
+
+print("Schnute")
+schnu1.samp$WAIC
+print("1-L1, 2-L2, 3-K")
+samp <- schnu1.samp$samples
+s = nrow(samp$chain1)
+cols <- grep("^Ustar",colnames(as.matrix(samp)))
+Ustar_sample <- matrix(samp$chain1[s, cols], npars, npars)
+crossprod(Ustar_sample)  ## i.e., t(Ustar_sample) %*% Ustar_sample
+```
+
+## 2. Spatial model sex covariate
+
+### a. von Bertalanffy
+
+Using a multivariate normal prior on VGBF params (LKJ prior). Non sexed individuals (sex = NA which are ~30%, mainly from France) are estimated in the model.
+
+#### Model
+
+```{r}
+vbgf2a.code <- nimbleCode({
+  # likelihood
+  for(i in 1:nobs){
+    length[i] ~ dnorm(mu[i], sd = sigma)
+    mu[i] <- (par[spat.unit[i],1] + b1[spat.unit[i]]*sex[i]) *
+      (1-exp(-(par[spat.unit[i],2] + b2[spat.unit[i]]*sex[i]) * (age.tot[i]-par[spat.unit[i],3])))
+  }
+
+  # estimate sex
+  for(k in 1:nobs){
+    sex[k]~dbern(psex[1])
+  }
+  psex[1] ~ dbeta(mean = 0.5, sd = 0.2)  #prop of males (prob to be 1)
+  psex[2] <- 1-psex[1]
+
+  # priors
+  sigma ~ dunif(0, 250)
+
+  # LKJ prior on correlation matrix, see NIMBLE manual p45.
+  Ustar[1:npars,1:npars] ~ dlkj_corr_cholesky(1.3, npars) # eta = 1.3
+  U[1:npars,1:npars] <- uppertri_mult_diag(Ustar[1:npars, 1:npars], sig_par[1:npars])
+
+  for(j in 1:nsu){
+   par[j, 1:npars] ~ dmnorm(mu_par[1:npars], cholesky = U[1:npars, 1:npars], prec_param = 0)
+
+   b1[j] ~ dnorm(mub1, sd = sb1)
+   b2[j] ~ dnorm(mub2, sd = sb2)
+  }
+
+  # mu and 2*sd from fishbase
+  mu_par[1] ~ dnorm(1378, sd = 2*139)
+  mu_par[2] ~ dnorm(0.43, sd = 2*0.28)
+  mu_par[3] ~ dnorm(-1.21, sd = 1.40)
+  # mu and 2*sd from fishbase
+  sig_par[1] ~ dlnorm(log(139),1)
+  sig_par[2] ~ dlnorm(log(0.43),1)
+  sig_par[3] ~ dlnorm(log(1.40),1)
+
+  mub1 ~ dnorm(0, 0.01)
+  mub2 ~ dnorm(0, 0.01)
+  sb1 ~ dlnorm(0, 1)
+  sb2 ~ dlnorm(0, 1)
+
+})
+
+# Function creating the Cholesky of the covar. matrix (p45 Nimble manual)
+uppertri_mult_diag <- nimbleFunction(
+  run = function(mat = double(2), vec = double(1)) {
+    returnType(double(2))
+    p <- length(vec)
+    out <- matrix(nrow = p, ncol = p, init = FALSE)
+    for(k in 1:p)
+      out[ , k] <- mat[ , k] * vec[k]
+    return(out)
+   # turn off buildDerivs for the i index
+}, buildDerivs = list(run = list(ignore = c('k'))))
+
+npars <- 3
+nsu <- length(unique(sallaa$spat.unit))
+
+# initial values generating function
+inits <- function(){
+  list(mu_par = c(rnorm(1,1300,140),
+                  rnorm(1,0.4,0.3),
+                  rnorm(1,-1.2,1.4)),
+       mub1 = rnorm(1,100,50),
+       mub2 = rnorm(1,0.5,0.5),
+       sig_par = c(rlnorm(1,-0.60,0.30),
+                   rlnorm(1,-3,0.05),
+                   rlnorm(1,-1,0.05)))}
+
+data <- sallaa %>%
+  mutate(sex = as.integer(if_else(sex == "f", 0, 1)),
+         spat.unit = as.integer(factor(sallaa$spat.unit))) %>%
+  filter(age.type == "both")
+
+# build model
+vbgf2a.model <- nimbleModel(vbgf2a.code,
+                        constants = list(npars=npars,
+                                         nsu = nsu,
+                                         nobs = nrow(data),
+                                         spat.unit = data$spat.unit),
+                        inits=inits(),
+                        data = data
+                        %>% select(age.tot,length,sex),
+                        buildDerivs = TRUE)
+
+```
+
+#### Configure, Build & Compile model & HMC
+
+```{r}
+# configure hmc
+vbgf2a.confhmc <- configureHMC(vbgf2a.model,
+                               monitors = c("par", "b1", "b2", "Ustar"),
+                               enableWAIC = TRUE)
+
+# build mcmc (use buidlHMC() when not using configureHMC())
+vbgf2a.hmc <- buildMCMC(vbgf2a.confhmc)
+
+# compile model
+vbgf2a.c <- compileNimble(vbgf2a.model)
+
+# the nodes that depend on sex
+# vbgf2a.c$getDependencies(c("sex")) %>%
+#   as_tibble() %>%
+#   mutate(nodes = str_extract(value, "\\w+")) %>%
+#   distinct(nodes)
+
+# compile mcmc  and specify the project model
+vbgf2a.hmcc <- compileNimble(vbgf2a.hmc)#, project = vbgf2a.c)
+
+```
+
+#### HMC Samples
+
+```{r}
+#help(NUTS)
+
+vbgf2a.samp <- runMCMC(vbgf2a.hmcc, niter = 5000, nburnin = 3000, nchains = 2, samplesAsCodaMCMC = TRUE, WAIC=TRUE)
+
+#vbgf2a.samp <- readRDS(file = paste0(home,"/vbgf2a.samp_20250517"))
+```
+
+#### Check/plot samples
+
+```{r}
+samp <- vbgf2a.samp$samples
+summary(vbgf2a.samp$samples)
+
+# length at age for the inds where sex is assigned by the model.
+data %>%
+  bind_cols(sex2 = vbgf2a.c$sex) %>%
+  filter(row_number() %in% which(is.na(data$sex))) %>%
+  ggplot(aes(age.tot, length, color = factor(sex2))) +
+  geom_point()
+
+# deselect the sex nods to reduce sample object size
+acfnodes <- colnames(vbgf2a.samp$samples$chain1)[-which(
+  str_detect(colnames(vbgf2a.samp$samples$chain1), "sex"))]
+vbgf2a.samp$samples[,c(acfnodes)]
+
+# Autocorrelation plots
+vbgf2a.samp$samples[,c(acfnodes)] %>%
+  autocorr.diag(lags = seq(0,500,1)) %>%
+  as_tibble(rownames = "lag") %>%
+  pivot_longer(cols = contains("par"), names_to = "node" , values_to = "corr") %>%
+  mutate(lag = as.numeric(str_extract(lag, "\\d+"))) %>%
+  ggplot() +
+  geom_bar(aes(x = lag, y = corr), stat = "identity") +
+  facet_wrap(~node) +
+  theme_light() +
+
+vbgf2a.samp$samples[,c(acfnodes)] %>%
+  autocorr.diag(lags = seq(0,500,1)) %>%
+  as_tibble(rownames = "lag") %>%
+  # drop the 0 valued Ustar variables (NaN corrs)
+  select_if(~!any(is.na(.))) %>%
+  pivot_longer(cols = c(!contains("par"), -lag), names_to = "node" , values_to = "corr") %>%
+  mutate(lag = as.numeric(str_extract(lag, "\\d+"))) %>%
+  ggplot() +
+  geom_bar(aes(x = lag, y = corr), stat = "identity") +
+  facet_wrap(~node) +
+  theme_light()
+
+# Trace plots
+pn = 16 # number of plots in each frame
+n = ncol(as.matrix(samp$chain1)) # number of nodes
+# loop trace through nodes
+for(i in seq(0, n, by = pn)){
+  m = if_else(i != pn*( n %/% pn), i+pn, i + n %% pn)
+  print(mcmc_trace(samp, pars = vars(i:m)))
+}
+
+gelman.diag(vbgf1a.samp$samples[1:2,])
+effectiveSize(vbgf2a.samp$samples)
+
+samp %>%
+  gather_draws(par[spat.unit,pars], sep = ",") %>%
+  mutate(pars = case_when(pars == 1 ~ "Linf",
+                         pars == 2 ~ "K",
+                         pars == 3 ~ "t0")) %>%
+  ggplot() +
+  geom_density(aes(x = .value, color = factor(spat.unit))) +
+  facet_wrap(~pars, scales = "free") +
+  theme_light()
+
+samp %>%
+  gather_draws(b1[spat.unit], b2[spat.unit], sep = ",") %>%
+  mutate(.variable = case_when(.variable == "b1" ~ "b_Linf",
+                         .variable == "b2" ~ "b_K")) %>%
+  ggplot() +
+  geom_density(aes(x = .value, color = factor(spat.unit))) +
+  facet_wrap(~.variable, scales = "free") +
+  theme_light()
+
+```
+#### shape of the VGBF by su
+```{r}
+
+samp %>%
+  spread_draws(b1, b2, par[emu, pars], sep = ",") %>%
+  mutate(males = case_when(pars == 1 ~ par + b1,
+                           pars == 2 ~ par + b2, 
+                          .default = par),
+         females = par,
+         pars = case_when(pars == 1 ~ "Linf",
+                          pars == 2 ~ "k", 
+                          pars == 3 ~ "t0")) %>%
+  pivot_longer(cols = c("males", "females"), names_to = "sex", values_to = "value") %>%
+  group_by(sex,emu,pars) %>%
+  median_qi() %>%
+  left_join(emu.name %>% summarise(my=mean(ser_y, na.rm = TRUE), .by=c(emu,ser_emu_nameshort))) %>% 
+  ggplot() +
+  geom_pointinterval(aes(y = value, x = my, ymin = value.lower, 
+             ymax = value.upper, color = ser_emu_nameshort, 
+             shape = sex), size = 0.8, alpha = 0.5, linewidth = 0.01) +
+  facet_wrap(~pars, ncol = 3) +#, scales = "free") +
+  scale_shape_manual(values = c(1, 4)) +
+  labs(x = "mean latitudes within emu")
+```
+
+### b. Schnute
+
+#### Model
+
+```{r}
+schnu2.code <- nimbleCode({
+  # likelihood
+  for(i in 1:nobs){
+    length[i] ~ dnorm(mu[i], sd = sigma)
+    
+    # + bL1[su[i]]*sex[i]
+    # + bK[su[i]]*sex[i]
+    # + bK[su[i]]*sex[i]
+    
+    mu[i] <- ( par[su[i],1]^P[su[i]] + (par[su[i],2]^P[su[i]] - par[su[i],1]^P[su[i]]) * ( (1-exp(-par[su[i],3]*(age.tot[i]-A1))) / (1-exp(-par[su[i],3]*(A2-A1))) ) )^(1/P[su[i]])
+    
+  #   u[i] <- (par[spat.unit[i],1] + b1[spat.unit[i]]*sex[i]) *
+  #     (1-exp(-(par[spat.unit[i],2] + b2[spat.unit[i]]*sex[i]) * (age.tot[i]-par[spat.unit[i],3])))
+        
+    }
+  
+  # Priors 
+  sigma ~ dunif(0, 250)
+  
+  # LKJ prior on correlation matrix, see NIMBLE manual p45.
+  Ustar[1:npars,1:npars] ~ dlkj_corr_cholesky(1.3, npars) # eta = 1.3
+  U[1:npars,1:npars] <- uppertri_mult_diag(Ustar[1:npars, 1:npars], sig_par[1:npars])
+  
+  for(j in 1:nsu){
+    par[j, 1:npars] ~ dmnorm(mu_par[1:npars], cholesky = U[1:npars, 1:npars], prec_param = 0)
+   
+    P[j] ~ dnorm(-1, 0.5)
+   #b1[j] ~ dnorm(mub1, sd = sb1)
+   #b2[j] ~ dnorm(mub2, sd = sb2)
+  }
+  
+  mu_par[1] ~ dnorm(100, sd = 50) # L1
+  mu_par[2] ~ dnorm(1300, sd = 100) # L2
+  mu_par[3] ~ dnorm(0.43, sd = 0.4) # K
+  
+  sig_par[1] ~ dexp(1/(50/4))
+  sig_par[2] ~ dexp(1/(100/4))
+  sig_par[3] ~ dexp(1/(0.4/4))
+  
+  # # Calculate Linf and K
+  #Linf  <- ( (exp(par[1]*A2)*L2^par[2] - (exp(par[1]*A1)*L1^par[2])) / (exp(par[1]*A2) - exp(par[1]*A1)) )^(1/par[1])
+  #t0 <- A1 + A2 - (1/par[2])*log(Linf)
+
+})
+
+# Function creating the Cholesky of the covar. matrix (p45 Nimble manual)
+uppertri_mult_diag <- nimbleFunction(
+  run = function(mat = double(2), vec = double(1)) {
+    returnType(double(2))
+    p <- length(vec)
+    out <- matrix(nrow = p, ncol = p, init = FALSE)
+    for(k in 1:p)
+      out[ , k] <- mat[ , k] * vec[k]
+    return(out)
+   # turn off buildDerivs for the i index
+}, buildDerivs = list(run = list(ignore = c('k')))) 
+
+# initial values generating function (par[1:4] = L1,p,L2,K)
+inits <- function(){
+  list(mu_par = c(rnorm(1, 100, 0.01),
+                  rnorm(1, 1000, 0.01),
+                  rnorm(1, 0, 0.01)),
+       P = rnorm(1,-2.5,1),
+       sig_par = c(rexp(1,1/(50/4)),
+                   rexp(1,1/(100/4)),
+                   rexp(1,1/(0.4/4))))}
+
+data <- sallaa %>%
+  filter(!age.type == "sea.only") %>%
+  mutate(su = as.integer(factor(spat.unit))) %>%
+  drop_na(su)
+
+npars <- 3
+A1 <- min(data$age.tot)
+A2 <- max(data$age.tot)
+
+# build model
+schnu2.model <- nimbleModel(schnu2.code,
+                        constants = list(npars=npars,
+                                         A1 = A1,
+                                         A2 = A2,
+                                         nobs = nrow(data),
+                                         nsu = length(unique(data$su)),
+                                         su = data$su
+                                         #constraint_data = 1),
+                                         ),
+                        #inits=inits(),
+                        data = data %>% select(age.tot,length)
+                        ,buildDerivs = TRUE)
+                        
+```
+
+#### Configure, Build & Compile model & HMC
+
+```{r}
+# configure hmc
+schnu2.confhmc <- configureHMC(schnu2.model, 
+                               monitors = c("par", "P", "Ustar"),
+                               enableWAIC = TRUE)
+
+# build mcmc (use buidlHMC() when not using configureHMC())
+schnu2.hmc <- buildMCMC(schnu2.confhmc)
+
+# compile model
+schnu2.c <- compileNimble(schnu2.model)
+
+# compile mcmc  and specify the project model
+schnu2.hmcc <- compileNimble(schnu2.hmc)
+```
+
+#### HMC Samples
+
+```{r}
+#help(NUTS)
+
+schnu2.samp <- runMCMC(schnu2.hmcc, niter = 5000, nburnin = 3000, nchains = 2, samplesAsCodaMCMC = TRUE, WAIC = TRUE)
+
+#vbgf2a.samp <- readRDS(file = paste0(home,"/vbgf2a.samp_20250517"))
+```
+
+#### Check/plot samples
+
+```{r}
+samp <- schnu2.samp$samples
+summary(samp)
+
+# Autocorrelation plots
+samp %>%
+  autocorr.diag(lags = seq(0,500,1)) %>%
+  as_tibble(rownames = "lag") %>%
+  pivot_longer(cols = contains("par"), names_to = "node" , values_to = "corr") %>%
+  mutate(lag = as.numeric(str_extract(lag, "\\d+"))) %>%
+  ggplot() +
+  geom_bar(aes(x = lag, y = corr), stat = "identity") +
+  facet_wrap(~node) +
+  theme_light() +
+
+samp %>%
+  autocorr.diag(lags = seq(0,500,1)) %>%
+  as_tibble(rownames = "lag") %>%
+  # drop the 0 valued Ustar variables (NaN corrs)
+  select_if(~!any(is.na(.))) %>%
+  pivot_longer(cols = c(!contains("par"), -lag), names_to = "node" , values_to = "corr") %>%
+  mutate(lag = as.numeric(str_extract(lag, "\\d+"))) %>%
+  ggplot() +
+  geom_bar(aes(x = lag, y = corr), stat = "identity") +
+  facet_wrap(~node) +
+  theme_light()
+
+# Trace plots
+pn = 16 # number of plots in each frame
+n = ncol(as.matrix(samp$chain1)) # number of nodes
+
+# loop trace through nodes
+for(i in seq(0, n, by = pn)){
+  m = if_else(i != pn*( n %/% pn), i+pn, i + n %% pn)
+  print(mcmc_trace(samp, pars = vars(i:m)))
+}
+
+gelman.diag(samp)
+effectiveSize(samp)
+
+samp %>%
+  gather_draws(par[su,np], sep = ",") %>%
+  #mutate(val = exp(.value)) %>%
+  ggplot() +
+  geom_density(aes(x = .value, color = factor(su))) + # age parameter
+  facet_wrap(~np, scales = "free") +
+  theme_light() +
+  
+samp %>%
+  gather_draws(P[su], sep = ",") %>%
+  ggplot() +
+  geom_density(aes(x = .value, color = factor(su))) + # age parameter
+  theme_light()
+
+```
+
+```{r}
+su.name <- data %>% 
+  distinct(spat.unit,su)
+
+samp %>%
+  gather_draws(par[su, np], P[su], sep = ",") %>%
+  median_qi() %>%
+  mutate(par = case_when(np == 1 ~ "L1",
+                         np == 2 ~ "L2",
+                         np == 3 ~ "K",
+                         .variable == "P" ~ "p"))  %>%
+  select(par, .value, su) %>%
+  pivot_wider(names_from = par, values_from = .value) %>%
+  expand_grid(age = seq(A1, A2, 0.1)) %>%
+  mutate(length = (L1^p + (L2^p - L1^p) * 
+         (1 - exp(-K*(age-A1))) / (1 - exp(-K*(A2-A1))) )^(1/p) ) %>%
+  left_join(su.name, by = "su") %>%
+  ggplot() +
+  geom_line(aes(age, length, color = factor(spat.unit))) +
+  geom_point(data = data, aes(age.tot, length, color = factor(spat.unit)), alpha = 0.1) +
+  theme_light() +
+  facet_wrap(~spat.unit, scales = "free") +
+  labs(title = "Schnute")
+
+```
+
+
+### c. AIC vbgf vs schnute
+
+```{r}
+schnu1.samp$WAIC
+vbgf1.samp$WAIC
+```
+
+### d. Schnute 2b
+
+spatially varying sex effect on P, L2, K. Putting P back into the LKJ as I´m using a normal gain on this. 
+
+```{r}
+schnu2b.code <- nimbleCode({
+  # likelihood
+  for(i in 1:nobs){
+    length[i] ~ dnorm(mu[i], sd = sigma)
+    
+    # mu[i] <- ( par[su[i],1]^P[su[i]] + (par[su[i],2]^P[su[i]] - par[su[i],1]^P[su[i]]) * ( (1-exp(-par[su[i],3]*(age.tot[i]-A1))) / (1-exp(-par[su[i],3]*(A2-A1))) ) )^(1/P[su[i]])
+    
+    mu[i] <- ( par[su[i],1]^(par[su[i],2] + bP[su[i]]*sex[i]) + ((par[su[i],3] + bL[su[i]]*sex[i])^(par[su[i],2]+ bP[su[i]]*sex[i]) - par[emu[i],1]^(par[su[i],2] + bP[su[i]]*sex[i])) * ( (1-exp(-(par[su[i],4] + bK[su[i]]*sex[i])*(age[i]-A1))) / (1-exp(-(par[su[i],4] + bK[su[i]]*sex[i])*(A2-A1))) ) )^(par[su[i],2]+ bP[su[i]]*sex[i])
+
+    }
+  
+  # Priors 
+  sigma ~ dunif(0, 250)
+  
+  # LKJ prior on correlation matrix, see NIMBLE manual p45.
+  Ustar[1:npars,1:npars] ~ dlkj_corr_cholesky(1.3, npars) # eta = 1.3
+  U[1:npars,1:npars] <- uppertri_mult_diag(Ustar[1:npars, 1:npars], sig_par[1:npars])
+  
+  for(j in 1:nsu){
+    par[j, 1:npars] ~ dmnorm(mu_par[1:npars], cholesky = U[1:npars, 1:npars], prec_param = 0)
+   
+   bL[j] ~ dnorm(mubL, sd = sbL)
+   bP[j] ~ dnorm(mubP, sd = sbP)
+   bK[j] ~ dnorm(mubL, sd = sbK)
+  
+  }
+  
+  mu_par[1] ~ dnorm(100, sd = 50) # L1
+  mu_par[2] ~ dnorm(-1, sd = 0.5) # P
+  mu_par[3] ~ dnorm(1300, sd = 100) # L2
+  mu_par[4] ~ dnorm(0.43, sd = 0.4) # K
+  
+  sig_par[1] ~ dexp(1/(50/4))
+  sig_par[2] ~ dexp(1/(0.5/4))
+  sig_par[3] ~ dexp(1/(100/4))
+  sig_par[4] ~ dexp(1/(0.4/4))
+  
+  mubL ~ dnorm(0, 0.01)
+  mubP ~ dnorm(0, 0.01)
+  mubK ~ dnorm(0, 0.01)
+  sbL ~ dlnorm(0, 1)
+  sbP ~ dlnorm(0, 1)
+  sbK ~ dlnorm(0, 1)
+  
+  # # Calculate Linf and K
+  #Linf  <- ( (exp(par[1]*A2)*L2^par[2] - (exp(par[1]*A1)*L1^par[2])) / (exp(par[1]*A2) - exp(par[1]*A1)) )^(1/par[1])
+  #t0 <- A1 + A2 - (1/par[2])*log(Linf)
+
+})
+
+# Function creating the Cholesky of the covar. matrix (p45 Nimble manual)
+uppertri_mult_diag <- nimbleFunction(
+  run = function(mat = double(2), vec = double(1)) {
+    returnType(double(2))
+    p <- length(vec)
+    out <- matrix(nrow = p, ncol = p, init = FALSE)
+    for(k in 1:p)
+      out[ , k] <- mat[ , k] * vec[k]
+    return(out)
+   # turn off buildDerivs for the i index
+}, buildDerivs = list(run = list(ignore = c('k')))) 
+
+# initial values generating function (par[1:4] = L1,p,L2,K)
+inits <- function(){
+  list(mu_par = c(rnorm(1, 100, 0.01),
+                  rnorm(1, 1000, 0.01),
+                  rnorm(1, 0, 0.01)),
+       P = rnorm(1,-2.5,1),
+       sig_par = c(rexp(1,1/(50/4)),
+                   rexp(1,1/(100/4)),
+                   rexp(1,1/(0.4/4))))}
+
+data <- sallaa %>%
+  filter(!age.type == "sea.only") %>%
+  mutate(su = as.integer(factor(spat.unit))) %>%
+  drop_na(su)
+
+npars <- 4
+A1 <- min(data$age.tot)
+A2 <- max(data$age.tot)
+
+# build model
+schnu2b.model <- nimbleModel(schnu2b.code,
+                        constants = list(npars=npars,
+                                         A1 = A1,
+                                         A2 = A2,
+                                         nobs = nrow(data),
+                                         nsu = length(unique(data$su)),
+                                         su = data$su
+                                         ),
+                        #inits=inits(),
+                        data = data %>% select(age.tot,length)
+                        ,buildDerivs = TRUE)
+                        
+```
+
+#### Fixing checks
+```{r}
+schnu2.model$getDependencies(c("par"))
+schnu2.model$initializeInfo()
+schnu1.model$simulate("sigma")
+schnu1.model$simulate("sig_par")
+schnu1.model$simulate("Ustar")
+schnu1.model$simulate("U")
+schnu1.model$sigma
+schnu1.model$U
+schnu1.model$Ustar
+schnu1.model$sig_par
+schnu1.model$simulate("mu_par")
+schnu1.model$mu_par
+schnu1.model$simulate("P")
+schnu1.model$P
+schnu1.model$simulate("par")
+schnu1.model$par
+schnu1.model$simulate("mu")
+schnu1.model$mu
+schnu1.model$simulate("length")
+schnu1.model$length
+```
