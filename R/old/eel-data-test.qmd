@@ -1,0 +1,85 @@
+---
+title: "check eel data"
+author: "Viktor Thunell"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+format: 
+  html:
+    page-layout: full
+    embed-resources: true
+knitr: 
+  opts_chunk:
+    fig.align: center
+    out-width: 80%
+editor: source
+execute: 
+  echo: true
+  eval: true
+  cache: true
+---
+
+## Load libraries
+
+```{r libs}
+#| message: false
+#| warning: false
+#| cache: false
+
+# Load libraries, install if needed
+pkgs <- c("tidyverse", "tidylog", "devtools","viridis") 
+
+if(length(setdiff(pkgs,rownames(installed.packages()))) > 0){
+  
+    install.packages(setdiff(pkgs, rownames(installed.packages())), dependencies = T)
+  
+  }
+
+invisible(lapply(pkgs, library, character.only = T))
+
+options(ggplot2.continuous.colour = "viridis")
+
+# Set path
+home <- here::here()
+```
+
+
+## Read data
+
+```{r}
+#| message: false
+#| warning: false
+#| cache: false
+
+# WGEEL data
+load(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming-data/eel/biometry.rdata")
+
+# Sötebasen Eel
+# problems(read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming-data/eel/ÅlindividerSötebasen.txt", locale = locale(encoding="latin1"), delim = "\t")) |>
+#   dplyr::select(col, expected) |>
+#   unique()
+# read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming-data/eel/ÅlindividerSötebasen.txt", locale = locale(encoding="latin1"), delim = "\t")[,c(46,24,38)]
+
+sb_alind <- read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming-data/eel/ÅlindividerSötebasen.csv", locale = locale(encoding="latin1"), delim = ";", col_types = cols(PlattaNr = col_character(), Provkod = col_character(), Genprov = col_character()))
+  
+str(alind)
+str(biometry_individual_sampling)
+str(biometry_individual_series)
+```
+
+
+```{r}
+setdiff(unique(biometry_individual_series$mty_name), unique(biometry_individual_sampling$mty_name))
+setdiff(unique(biometry_individual_sampling$mty_name), unique(biometry_individual_series$mty_name))
+
+unique(biometry_individual_series$ser_emu_nameshort)
+  
+biometry_individual_series |>
+  summarise(n = n(), .by = c(ser_emu_nameshort, mty_name)) |>
+  arrange(-n)
+
+biometry_individual_sampling
+
+```
+```{r}
+
+```
+

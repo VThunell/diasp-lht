@@ -66,7 +66,7 @@ Four data sets build the length at age data:
 4. France catch data
     + Recreational and commercial fishing and scientific trapping
     + from rivers throughout the French Atlantic coast
-    + Juvenile salmon smolt from traps and electrofished parr.
+    + Juvenile salmon smolt from traps and electrofished parr
 5. Latvia data
     + 
     + 
@@ -80,7 +80,6 @@ The data is filtered and cleaned in Section 4 when combining data.
 #| warning: true
 #| cache: false
 #| output: false
-unique(swe.sallaa$stage)
 
 # Sweden SLU database "Sötebasen"
 swe.sallaa <- read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming data/salmon/LaxindividerSötebasen.csv", delim = ";", locale = locale(encoding="latin1"), col_types = cols(Märkning2 = col_character(), Märke2Nr = col_character(), ÅlderLek3 = col_character())) %>%
@@ -166,6 +165,7 @@ fra.sallaa2 <- read_excel("/Users/vitl0001/Documents/Projects/DIASPARA/Incoming 
          sai_lfs_code = stage
          ) %>%
   mutate(date = parse_date_time(cam_date_heure_fin, orders = c("ymd", "ymd HMS")),
+         sex = if_else(sxe_code_ref %in% c("M","F"), str_to_lower(sxe_code_ref), NA),
          date = floor_date(date, "minute"),
          fi_year = year(date),
          sai_location = str_to_title(sita_nom),
@@ -191,26 +191,22 @@ lva.sallaa <- read_excel("/Users/vitl0001/Documents/Projects/DIASPARA/Incoming d
 # Ireland catch data
 ie.sallaa <- read_excel("/Users/vitl0001/Documents/Projects/DIASPARA/Incoming data/salmon/original/DIASPARA-Tables-Salmon-Data-request - UPDATED sheet Burrishoole.xlsx", sheet = 3) %>%
   mutate(fi_datecapture = as.character(fi_datecapture)) %>%
-  
-  
-  left_join(read_excel("/Users/vitl0001/Documents/Projects/DIASPARA/Incoming data/salmon/original/DIASPARA-Tables-Salmon-Data-LV.xlsx", sheet = 2) %>%
+  left_join(read_excel("/Users/vitl0001/Documents/Projects/DIASPARA/Incoming data/salmon/original/DIASPARA-Tables-Salmon-Data-request - UPDATED sheet Burrishoole.xlsx", sheet = 2) %>%
               filter(if_any(everything(), ~ !is.na(.))), by = "sai_name") %>%
   mutate(sex = if_else(`is_female(0=male, 1=female)` == 1, "f", "m", missing = NA), 
          origin = if_else(`presence_adipose_fin(0=absent, 1=present)` == 1, "wild","reared"),
-         juvenile_age_year = str_replace(juvenile_age_year, "\\+",""),
-         juvenile_age_year = as.numeric(juvenile_age_year),
-         fi_year = year(fi_datecapture),
-         # chnage x to y and y to x. 
-         pl = fisa_x_4326, 
-         fisa_x_4326 = fisa_y_4326,
-         fisa_y_4326 = pl)
-DIASPARA-Tables-Salmon-Data-request - UPDATED sheet Burrishoole
+         juvenile_age_year = str_replace(juvenile_age_year, "\\+",""), #remove plus 
+         juvenile_age_year = parse_number(juvenile_age_year),
+         fi_year = year(fi_datecapture))
+
 # str(swe.sallaa)
 # str(fin.sallaa)
 # str(fin.sallaa2)
 # str(fra.sallaa)
 # str(fra.sallaa2)
 # str(lva.sallaa)
+# str(ie.sallaa)
+
 ```
 
 ### 1b. Read Fecundity at length data
@@ -335,9 +331,11 @@ To add spatial information, sai_location name in the data is matched (dplyr::lef
 The spatial information added is:
 
 * Coordinates (WGS84 DD). French coordinates either provided by Hilaire Drouineau or added manually by V.T., they are at the river mouth (entering the sea or from a tributary) or for the Baie Mont St Michelle in the center of the bay. These are not catch places. For many tributary rivers, the main river mouth is used and for those rivers,the names are changed in 3a when combining data. Swedish coordinates eother existing in the data or added manually (river mouth, not catch place). 
-* Stock unit (for WGNAS stock unit Sweden and France), 
+* Stock unit (for WGNAS stock unit Sweden, Ireland, and France), 
 * Assessment unit (for WGBAST), 
 * Region and genetic region from French regions from Perrier et al. 2011 (doi: 10.1111/j.1365-294X.2011.05266.x), and provided by M. Nevoux, existing in the french fecundity data or added manually by V.T with input from M. Nevoux. Swedish regions are defined as Baltic Sea and Swedish west coast and Finnish is Baltic Sea.
+* All Irish data share one coordinate which represents where the Burrishoole enters the sea.
+
 
 ```{r}
 #| warning: true
@@ -351,8 +349,6 @@ AU.rivers = bind_cols(sai_location = c("Tornionjoki","Simojoki","Kalixälven","R
   bind_rows(bind_cols(sai_location = c("Torneälven_hatchery","Luleälven_(RG_with_Pite)","Iijoki","Oulujoki","Skellefteälven","Umeälven_(RG_with_Vindel)","Ångermanälven","Indalsälven_(RG_with_Ljungan)","Ljusnan","Dalälven_(RG_with_Testeboån)", "Torneälven","Gideälven"), 
                       asses.unit = c(1,2,1,1,2,2,3,3,3,3,1,2), 
                       stock.origin = "reared")) 
-
-
 
 # And the Swedish rivers entering the the Western sea, i.e. WGNAS stock unit "Sweden".
 SU.rivers = bind_cols(sai_location = c("Ätran","Örekilsälven","Göta älv","Lagan","Västerhavet (hela) ICES SD 20-21","Genevadsån","Fylleån","Stensån"),
@@ -471,8 +467,7 @@ fra.rivers2  <- fra.rivers %>%
 
 ### 3a. Filter, clean and combine data
 
-* Keeping only adult individuals (removing NA and 0 sea age individuals).
-* Remove NA values in length and age.
+* Remove NA values in length AND age.
 * Remove individuals from Swedish lakes 
 * Correct an obvious outlier in the Swedish length data  
 * Remove three mark-recaptured individuals in Swedish data
@@ -523,8 +518,65 @@ dup.markrec <- swe.sallaa %>%
   # id the mark (shorter) instance
   slice_min(length_mm, by = MärkeNr)
 
-# Combine the data
-all.sallaa <- swe.sallaa %>%
+# # Combine the data
+# all.sallaa <- swe.sallaa %>%
+#   # remove the mark-recaps
+#   anti_join(dup.markrec) %>%
+#   # remove the lakes in the data
+#   filter(!sai_location %in% c("Vättern", "Vänern")) %>% 
+#   drop_na(length_mm) %>%
+#   mutate(length_mm = ifelse(length_mm > 2000, length_mm/10, length_mm)) %>%
+#   dplyr::select("sai_cou_code", "fi_year", "sai_location", "origin", "length_mm", "weight_g", "AU", "sea_age_year", "juvenile_age_year", "sex") %>%
+#   bind_rows(fin.sallaa %>% 
+#               # remove individuals without length or sea age
+#               drop_na(length_mm) %>% 
+#               dplyr::select("sai_cou_code", "fi_year", "sai_location", "origin", "length_mm", "weight_g", "sea_age_year", "juvenile_age_year", "sex")) %>%
+#   bind_rows(fin.sallaa2 %>%
+#               # remove individuals without length or sea age
+#               drop_na(length_mm) %>% 
+#               dplyr::select("sai_cou_code", "fi_year", "sai_location", "origin", "length_mm", "weight_g", "sea_age_year", "juvenile_age_year","sex")) %>%
+#   left_join(SweFin.rivers, by = "sai_location") %>%
+#   # prefer the existing AU before the new one.
+#   mutate(asses.unit = if_else(is.na(AU), asses.unit, AU)) %>% 
+#   dplyr::select(!AU) %>%
+#   bind_rows(fra.sallaa %>% 
+#               rename(gen.sex = `Genetic sex`,
+#                      field.sex = `Sex observed in the field`) %>%
+#               mutate(# remove french accents and hyphens
+#                      sai_location = stringi::stri_trans_general(sai_location, "Latin-ASCII"),
+#                      sai_location = str_replace_all(sai_location,"-"," "),
+#                      # changing tributaries to main sai_location 
+#                      sai_location = case_when(sai_location %in% c("Varenne","Bethune") ~ "Arques", 
+#                                        sai_location %in% c("Inam") ~ "Elle",
+#                                        sai_location %in% c("Austreberthe") ~ "Seine",
+#                                        sai_location %in% c("Arroux", "Allier") ~ "Loire",
+#                                        sai_location %in% c("Jet","Steir") ~ "Odet",
+#                                        .default = sai_location),
+#                      # Using observed sex in the field when genetic is missing to complete info
+#                      sex = str_to_lower(if_else(is.na(gen.sex), field.sex, gen.sex)), 
+#                      # correct a "1" valued entry to NA
+#                      sex = if_else(sex %in% c("f","m"), sex, NA),
+#                      # calculate total from fork length and correct TL outlier: 51 mm and 2 yo
+#                      length_mm = if_else(is.na(total_length) | total_length == 51, exp(0.2892351)*fork_length^0.9623479, total_length), 
+#                      # Correct one ind. at 7900 mm and assume it is 790 mm
+#                      length_mm = ifelse(length_mm > 2000, length_mm/10, length_mm),
+#                      ) %>% 
+#               drop_na(length_mm) %>%
+#               dplyr::select("sai_cou_code", "fi_year", "sai_location", "origin", "length_mm", "sea_age_year", "juvenile_age_year", "sex") %>%
+#               mutate(weight_g = NA) %>%
+#               left_join(fra.rivers2)) %>%
+#   bind_rows(lva.sallaa %>% 
+#               mutate(length_mm = if_else(`method_length(0=total,1=fork length)` == 1, exp(0.2892351)*length_mm^0.9623479, length_mm)) %>%
+#               dplyr::select("sai_cou_code", "fi_year", "sai_location", "origin", "length_mm", "weight_g", "sea_age_year", "juvenile_age_year","sex", "fisa_y_4326", "fisa_x_4326") %>% 
+#               mutate(asses.unit = 5,
+#                      region = "Baltic.sea"))
+# 
+# str(all.sallaa)
+
+
+# fix and combine swedish and finnish data
+swefin.sallaa <- 
+  swe.sallaa %>%
   # remove the mark-recaps
   anti_join(dup.markrec) %>%
   # remove the lakes in the data
@@ -543,41 +595,65 @@ all.sallaa <- swe.sallaa %>%
   left_join(SweFin.rivers, by = "sai_location") %>%
   # prefer the existing AU before the new one.
   mutate(asses.unit = if_else(is.na(AU), asses.unit, AU)) %>% 
-  dplyr::select(!AU) %>%
-  bind_rows(fra.sallaa %>% 
-              rename(gen.sex = `Genetic sex`,
-                     field.sex = `Sex observed in the field`) %>%
-              mutate(# remove french accents and hyphens
-                     sai_location = stringi::stri_trans_general(sai_location, "Latin-ASCII"),
-                     sai_location = str_replace_all(sai_location,"-"," "),
-                     # changing tributaries to main sai_location 
-                     sai_location = case_when(sai_location %in% c("Varenne","Bethune") ~ "Arques", 
-                                       sai_location %in% c("Inam") ~ "Elle",
-                                       sai_location %in% c("Austreberthe") ~ "Seine",
-                                       sai_location %in% c("Arroux", "Allier") ~ "Loire",
-                                       sai_location %in% c("Jet","Steir") ~ "Odet",
-                                       .default = sai_location),
-                     # Using observed sex in the field when genetic is missing to complete info
-                     sex = str_to_lower(if_else(is.na(gen.sex), field.sex, gen.sex)), 
-                     # correct a "1" valued entry to NA
-                     sex = if_else(sex %in% c("f","m"), sex, NA),
-                     # calculate total from fork length and correct TL outlier: 51 mm and 2 yo
-                     length_mm = if_else(is.na(total_length) | total_length == 51, exp(0.2892351)*fork_length^0.9623479, total_length), 
-                     # Correct one ind. at 7900 mm and assume it is 790 mm
-                     length_mm = ifelse(length_mm > 2000, length_mm/10, length_mm),
-                     ) %>% 
-              drop_na(length_mm) %>%
-              dplyr::select("sai_cou_code", "fi_year", "sai_location", "origin", "length_mm", "sea_age_year", "juvenile_age_year", "sex") %>%
-              mutate(weight_g = NA) %>%
-              left_join(fra.rivers2)) %>%
-  bind_rows(lva.sallaa %>% 
+  dplyr::select(!AU)
+
+# fix Latvia data
+lva.sallaa.b <- lva.sallaa %>% 
               mutate(length_mm = if_else(`method_length(0=total,1=fork length)` == 1, exp(0.2892351)*length_mm^0.9623479, length_mm)) %>%
-              dplyr::select("sai_cou_code", "fi_year", "sai_location", "origin", "length_mm", "weight_g", "sea_age_year", "juvenile_age_year","sex", "fisa_y_4326", "fisa_x_4326") %>% 
+              dplyr::select(sai_cou_code,fi_year,sai_location,origin,length_mm,weight_g,sea_age_year,juvenile_age_year,sex,fisa_y_4326,fisa_x_4326) %>% 
               mutate(asses.unit = 5,
-                     region = "Baltic.sea"))
+                     region = "Baltic.sea")
+
+# fix combine fra.sallaa and fra.sallaa2 
+fra.sallaa.b <- fra.sallaa %>% 
+  rename(gen.sex = `Genetic sex`,
+         field.sex = `Sex observed in the field`) %>%
+  mutate(# remove french accents and hyphens
+    sai_location = stringi::stri_trans_general(sai_location, "Latin-ASCII"),
+    sai_location = str_replace_all(sai_location,"-"," "),
+    # changing tributaries to main sai_location 
+    sai_location = case_when(sai_location %in% c("Varenne","Bethune") ~ "Arques", 
+                             sai_location %in% c("Inam") ~ "Elle",
+                             sai_location %in% c("Austreberthe") ~ "Seine",
+                             sai_location %in% c("Arroux", "Allier") ~ "Loire",
+                             sai_location %in% c("Jet","Steir") ~ "Odet",
+                             .default = sai_location),
+    # Using observed sex in the field when genetic is missing to complete info
+    sex = str_to_lower(if_else(is.na(gen.sex), field.sex, gen.sex)), 
+    # correct a "1" valued entry to NA
+    sex = if_else(sex %in% c("f","m"), sex, NA),
+    # calculate total from fork length and correct TL outlier: 51 mm and 2 yo
+    length_mm = if_else(is.na(total_length) | total_length == 51, exp(0.2892351)*fork_length^0.9623479, total_length), 
+    # Correct one ind. at 7900 mm and assume it is 790 mm
+    length_mm = ifelse(length_mm > 2000, length_mm/10, length_mm),
+    ) %>% 
+  drop_na(length_mm) %>%
+  dplyr::select(sai_cou_code, fi_year, sai_location, origin, length_mm, sea_age_year,
+                juvenile_age_year, sex) %>%
+  mutate(weight_g = NA) %>%
+  bind_rows(fra.sallaa2 %>% 
+              mutate(origin = "wild",
+                     sea_age_year = NA,
+                     length_mm = exp(0.2892351)*fork_length^0.9623479,
+                     juvenile_age_year = as.numeric(if_else(juvenile_age_year == "NA", NA, juvenile_age_year))) %>%
+              dplyr::select(sai_cou_code, fi_year, sai_location, origin, length_mm, sea_age_year,juvenile_age_year, sex, sai_lfs_code) %>%
+              mutate(weight_g = NA)) %>%
+  left_join(fra.rivers2)
+
+# Fix Irish data
+ie.sallaa.b <- ie.sallaa %>%
+  mutate(length_mm = if_else(`method_length(0=total,1=fork length)` == 1,
+                             exp(0.2892351)*length_mm^0.9623479, length_mm),
+           fisa_x_4326 = as.numeric(gsub("\u2013|\u2014", "-", fisa_x_4326))
+         ) %>%
+  dplyr::select(sai_cou_code,fi_year,sai_location,origin,length_mm,weight_g,sea_age_year,juvenile_age_year,sex,fisa_y_4326,fisa_x_4326) %>%
+  mutate(stock.unit = "Ireland",
+         region = "Burrishoole")
+
+all.sallaa <- swefin.sallaa %>%
+  bind_rows(fra.sallaa.b, lva.sallaa.b, ie.sallaa.b)
 
 str(all.sallaa)
-
 ```
 
 ### 3b. Create spatial units
@@ -585,67 +661,86 @@ str(all.sallaa)
 ```{r}
 all.sallaa <- all.sallaa %>%
   mutate(spat.unit = case_when(region == "Baltic.sea" ~ paste0(region,":AU-",asses.unit),
-                             region == "Swedish.westcoast" ~ region, 
-                             .default = region.gen))
-
+                               region == "Swedish.westcoast" ~ region,
+                               region == "Burrishoole" ~ region,
+                               .default = region.gen))
 ```
 
 ### 3c. Correct age types Map and summary of length at age
 
 Classify age types - sea and smolt age only or both age types present. 
 ```{r}
-
 all.sallaa2 <- all.sallaa %>% 
-  rowwise() %>% # rowwise needed for non vectorised function like sum
   # create life stage and total age columns
   mutate(age.type = case_when(is.na(sea_age_year) & is.na(juvenile_age_year) ~ NA,
-                              sea_age_year == 0 | is.na(sea_age_year) ~ "juve.only",
+                              is.na(sea_age_year) ~ "juve.only", #FEL??
                               sea_age_year > 0 & juvenile_age_year > 0 ~ "both",
-                              juvenile_age_year == 0 | is.na(juvenile_age_year) ~ "sea.only",
-                              .default = NA),
-         tot_age_year = if_else(is.na(sea_age_year) & is.na(juvenile_age_year), NA,
+                              is.na(juvenile_age_year) ~ "sea.only",
+                              .default = NA))
+
+# check n and sizes of unclassified age types. 
+all.sallaa2 %>%
+  filter(!(is.na(sea_age_year) & is.na(juvenile_age_year))) %>%
+  filter(is.na(age.type)) %>%
+  distinct(juvenile_age_year, sea_age_year)
+all.sallaa2 %>%
+  filter(!(is.na(sea_age_year) & is.na(juvenile_age_year))) %>%
+  filter(is.na(age.type)) %>%
+  ggplot() +
+  geom_point(aes(juvenile_age_year, length_mm)) +
+  geom_point(aes(sea_age_year, length_mm)) +
+  xlab("sea or juvenile age")
+
+# all are too large to be pre smolts so set age.type "both"
+all.sallaa3 <- all.sallaa2 %>%
+  mutate(age.type = case_when(!(is.na(sea_age_year) & is.na(juvenile_age_year)) & is.na(age.type) ~ "both",
+         .default = age.type)) %>%
+  # and calculate total age
+  rowwise() %>% # rowwise needed for non vectorised function like sum
+  mutate(tot_age_year = if_else(is.na(sea_age_year) & is.na(juvenile_age_year), NA,
                            sum(sea_age_year,juvenile_age_year, na.rm = TRUE))) %>%
   ungroup()
 
-all.sallaa2 %>%
+all.sallaa3 %>%
   drop_na(age.type) %>%
-  ggplot(aes(tot_age_year, length_mm, color = age.type)) +
+  ggplot(aes(tot_age_year, length_mm, color = sai_cou_code)) +
   geom_point() +
   facet_wrap(~age.type) +
   scale_x_continuous(breaks = seq(0, 13, 1) )
 # some fish are too large to be smolts - these need to be corrected
-all.sallaa2 %>%
+all.sallaa3 %>%
   filter(age.type == "juve.only" & length_mm >= 290) %>%
   distinct(sai_cou_code,sai_location)
 
 # Fix ages that are not correctly classified
-all.sallaa3 <- all.sallaa2 %>%
-  # set sea age = smolt age  
+all.sallaa4 <- all.sallaa3 %>%
+  # set sea age = juve age  
   mutate(sea_age_year = case_when(age.type == "juve.only" & length_mm >= 290 ~ juvenile_age_year,
-                                          .default = sea_age_year),
-         # set smolt age = 0,  
-         juvenile_age_year = case_when(age.type == "juve.only" & length_mm >= 290 & !is.na(juvenile_age_year) ~ 0,
-                                          .default = juvenile_age_year),
+                                  .default = sea_age_year),
+         # set juven. age = NA,  
+         juvenile_age_year = case_when(age.type == "juve.only" & length_mm >= 290 & !is.na(juvenile_age_year) ~ NA,
+                                       .default = juvenile_age_year),
          # reclassify their age types
          age.type = case_when(age.type == "juve.only" & length_mm >= 290 ~ "sea.only",
-                              .default = age.type))
+                              .default = age.type)) %>%
+  # one "both" that should be sea.anly
+  mutate(age.type = if_else(age.type == "both" & length_mm >= 500 & tot_age_year == 0, "sea.only", age.type) )
 
 # Check. 
 # Id sites with smolts
-swj <- all.sallaa3 %>% filter(age.type == "juve.only") %>% distinct(sai_location) %>% pull(sai_location) 
+swj <- all.sallaa4 %>% filter(age.type == "juve.only") %>% distinct(sai_location) %>% pull(sai_location) 
 
-all.sallaa3 %>%
+all.sallaa4 %>%
   drop_na(age.type) %>%
   ggplot(aes(tot_age_year, length_mm, color = age.type)) +
   geom_point() +
   facet_wrap(~age.type) +
-all.sallaa3 %>%
+all.sallaa4 %>%
   drop_na(age.type) %>%
   filter(sai_location %in% swj) %>%
   ggplot(aes(tot_age_year, length_mm, color = age.type)) +
   geom_point() +
   facet_wrap(~sai_location)
-
 
 ```
 
@@ -655,43 +750,42 @@ There is no weight measurements in the French length at age data.
 ```{r}
 
 # Swedish weights are in milligrams*10. So divide by 100 to get grams.
-all.sallaa3 %>%
-  drop_na(tot_age_year) %>% # two na-aged swedish fish with wrong lw-relationships removed
+all.sallaa4 %>%
+  drop_na(tot_age_year) %>% # two na-aged Swedish fish with wrong lw-relationships removed
   ggplot() +
   geom_point(aes(length_mm, weight_g, color = sai_cou_code)) +
   facet_wrap(~sai_cou_code, scales = "free") +
-  labs(subtitle = "no information on weight in Franch fish")
+  labs(subtitle = "no weight data on French and Irish fish")
 
-all.sallaa4 <- all.sallaa3 %>% 
+all.sallaa5 <- all.sallaa4 %>%
   mutate(weight_g = if_else(sai_cou_code == "SWE", weight_g/100, weight_g))
 
-# Small ones in Latvia, CHECK these with Janis at BIOR
-all.sallaa4 %>%
+# light weight ones in Latvia, CHECK these with Janis at BIOR
+all.sallaa5 %>%
   drop_na(tot_age_year) %>%
   filter(sai_cou_code == "LV",
          weight_g < 100,
          length_mm >200)
 
 # still some odd l-w:s to fix if weight is used. 
-all.sallaa4 %>%
+all.sallaa5 %>%
   drop_na(tot_age_year) %>%
   ggplot() +
   geom_point(aes(length_mm, weight_g, color = sai_cou_code))
 
-
 ```
 
-  ### 3d. Map and summary of length at age
+### 3d. Map and summary of length at age
 
 ```{r}
 # length at age by a suitable spatial aggregation (spat.unit) is defined as French regions, Swedish west coast and Baltic assessment units. This results in 10 spatial units (plus an NA group which will disappear when the French region information is complete) which should represent genetic and ecological units. There are observations without assessment units in the Baltic as the only spatial information we have is that they are from the Baltic as a whole. 
-all.sallaa4 %>%
+all.sallaa5 %>%
   ggplot(aes(sea_age_year, length_mm, color = spat.unit)) +
   geom_point() +
   facet_wrap( ~spat.unit) 
   
 plot_map_Euro +
-  geom_point(data = all.sallaa4 %>%
+  geom_point(data = all.sallaa5 %>%
                drop_na(fisa_x_4326, fisa_y_4326) %>%
                add_utm_columns(ll_names = c("fisa_x_4326", "fisa_y_4326"), utm_crs = 32633),
              aes(X*1000, Y*1000), color = "#440154FF", size = 0.3, show.legend = TRUE) +
@@ -700,7 +794,7 @@ ggsave("laa_map.png", scale = 0.8)
 
 
 # ind counts by spatial unit
-all.sallaa4 %>%
+all.sallaa5 %>%
   #filter(age.type == "juve.only") %>%
   mutate(river1 = paste0(sai_cou_code,":",sai_location)) %>% 
   summarise(count = n(), .by = c(fi_year, sai_cou_code, river1)) %>%
@@ -718,8 +812,8 @@ all.sallaa4 %>%
   labs(title = "Length at age individuals by river and year",
        subtitle = "Juveniles only")
     
-# ind counts by sai_location FINLAND and SWEDEN
-all.sallaa4 %>%
+# ind counts by sai_location excluding France
+all.sallaa5 %>%
   mutate(river1 = paste0(sai_cou_code,":",sai_location)) %>% 
   summarise(count = n(), .by = c(fi_year, sai_cou_code, river1)) %>%
   mutate(count.ind = as.factor(ifelse(count > 50, ">50",
@@ -733,12 +827,27 @@ all.sallaa4 %>%
   scale_fill_viridis_d() +
   theme_light()
 
+# France only
+all.sallaa5 %>%
+  mutate(river1 = paste0(sai_cou_code,":",sai_location)) %>% 
+  summarise(count = n(), .by = c(fi_year, sai_cou_code, river1)) %>%
+  mutate(count.ind = as.factor(ifelse(count > 50, ">50",
+                                  ifelse(count > 30 & count <= 50, ">30",
+                                         ifelse(count > 10 & count <= 30, ">10",
+                                         "1 - 10")))),
+         count.ind = fct_reorder(count.ind, count)) %>%
+  filter(sai_cou_code == "FRA") %>%
+  ggplot(aes(fi_year, river1, fill = count.ind, group = sai_cou_code)) +
+  geom_tile(color = "gray30") +
+  scale_fill_viridis_d() +
+  theme_light()
+
 ```
 
 By suggested spatial aggregation:
 ```{r}
 # ind counts by a suggested spatial aggregation
-all.sallaa4 %>%
+all.sallaa5 %>%
   summarise(count = n(), .by = c(fi_year, spat.unit)) %>%
   mutate(Ind.count = as.factor(ifelse(count > 50, ">50",
                                       ifelse(count > 30 & count <= 50, ">30",
