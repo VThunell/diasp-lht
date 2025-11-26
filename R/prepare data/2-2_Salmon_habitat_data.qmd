@@ -1,0 +1,215 @@
+---
+title: "Combine salmon and habitat data DIASPARA 2.2"
+author: "Viktor Thunell"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+format: 
+  html:
+    code-fold: true
+    code-summary: "Show code"
+    page-layout: full
+    embed-resources: true
+knitr: 
+  opts_chunk:
+    fig.align: center
+    out-width: 80%
+editor: source
+execute: 
+  echo: true
+  eval: true
+  cache: false
+---
+
+## Load libraries
+
+```{r libs}
+#| message: true
+#| warning: false
+
+# Load libraries, install if needed
+pkgs <- c("tidyverse","tidylog","viridis","duckdb","arrow","sf")
+
+if(length(setdiff(pkgs,rownames(installed.packages()))) > 0){
+  
+    install.packages(setdiff(pkgs, rownames(installed.packages())), dependencies = T)
+  
+  }
+
+invisible(lapply(pkgs, library, character.only = T))
+
+options(ggplot2.continuous.colour = "viridis")
+#theme_set(theme_grey()) # check why global theme option not working when rendering
+devtools::source_url("https://raw.githubusercontent.com/VThunell/diasp-lht/main/R/functions/map-plot.R") # message of SHA-1 hash for file
+
+# Set path
+home <- here::here()
+
+```
+## Read data
+
+```{r}
+#| message: false
+#| warning: false
+#| cache: false
+
+sallaa <- readRDS(file = paste0(home,"/data/data-for-2-2/salmon-laa_2025-09-08.RData")) %>%
+  rename(year = fi_year,
+         site = sai_location,
+         sea.age = sea_age_year,
+         juv.age = juvenile_age_year,
+         tot.age = tot_age_year,
+         lat = fisa_y_4326,
+         lon = fisa_x_4326) %>%
+  #filter out non-aged individuals (~90000 individuals)
+  filter(!(is.na(sea.age) & is.na(juv.age))) %>%
+  filter(!is.na(juv.age),
+         !is.na(year),
+         year > 2000)
+
+df <- sallaa #%>%
+  #slice_sample(n = 100)
+```
+
+```{r}
+rs <- open_dataset("/Users/vitl0001/Documents/Projects/DIASPARA/Habitat_db/riversegments/", format = "parquet")
+
+ca <- open_dataset("/Users/vitl0001/Documents/Projects/DIASPARA/Habitat_db/catchments/", format = "parquet")
+
+schema(ca)
+
+ca %>%
+  select(shape) %>%
+  collect()
+```
+
+# refbast
+```{r}
+refbast <- open_dataset("/Users/vitl0001/Documents/Projects/DIASPARA/Habitat_db/refbast/", format = "parquet")
+schema(refbast)
+
+df.refbast <- refbast %>%
+  collect()
+
+
+class(df.refbast$geom_line) # not compatible with sf 
+#"As for geom_line, it is a known issue with parquet files. When converting the data from psql to parquet I can only register one column as a geometry, hence the other one being a chr. I’ll add a second file where geom_line is the main geometry later on so you’ll be able to merge both files and have geom_polygon and geom_line working." /Jules
+
+df.refbast.sf <- df.refbast %>%
+  drop_na(geom_polygon) %>%
+  mutate(geometry = st_as_sfc(geom_polygon, EWKB = TRUE, crs = 4326)) %>%
+  st_as_sf(sf_column_name = "geometry") 
+
+ggplot() +
+  geom_sf(data = df.refbast.sf %>% filter(are_lev_code == "Assessment unit"))
+
+plot_map_Euro +
+  geom_sf(data = df.refbast.sf)
+```
+# plot catchm. shapes
+```{r}
+ca_sf <- ca %>%
+  #slice_head(n = 10000) %>%
+  collect() %>%
+  mutate(geometry = st_as_sfc(shape, EWKB = TRUE, crs = 4326)) %>%
+  st_as_sf(sf_column_name = "geometry")
+
+ca_sf %>%
+  ggplot() +
+  geom_sf()
+```
+# plot riverseg. shapes
+```{r}
+rs.sf <- rs %>%
+  #slice_head(n = 10000) %>%
+  collect() %>%
+  mutate(geometry = st_as_sfc(geom, EWKB = TRUE, crs = 4326)) %>%
+  st_as_sf(sf_column_name = "geometry")
+
+rs.sf %>%
+  ggplot() +
+  geom_sf()
+```
+
+```{r}
+library(DBI)
+library(RPostgres)
+library(dplyr)
+
+con <- DBI::dbConnect(drv=RPostgres::Postgres(),
+		dbname = "diaspara",
+		host = "185.135.126.250",
+		user = "diaspara_read",
+		password = "diaspara_read_*123"  
+)
+
+area <- dbGetQuery(con, "SELECT 
+				are_id,
+				are_are_id, 
+				are_code,
+				are_lev_code,
+				are_ismarine,
+				are_rivername FROM refbast.tr_area_are;")
+
+save(area, file = "C:/workspace/DIASPARA_WP3_habitat/data/area.Rdata")
+
+get_area <- function(are_id, area, tab=data.frame()) {
+	if (is.na(are_id)) {
+		return(tab) 
+	} else {
+		if (nrow(tab)==0){
+			tab <- area[area$are_id == are_id,]
+		} else {			
+			tab <- rbind(tab, area[area$are_id == are_id,])
+		}
+		are_id <- tab[nrow(tab), "are_are_id"]
+		get_area(are_id, area, tab)		
+	}
+}
+
+
+# So we can use a recursive from R 
+hierar <- get_area(area,are_id = 1275)
+
+# or from postgres
+
+get_area_postgres <- function( con, are_id){
+	return(dbGetQuery(con, "SELECT * FROM ref.get_parent_area(1275, 'WGBAST')"))
+}
+
+hierar <- get_area_postgres(con, are_id = 1275)
+# Lets say you have the main_river code as a vector from your points (you know this by spatial join between points and the river segment)
+
+main_rivers <- c("20056363", "20056030")
+
+selected_areas <- dplyr::left_join(data.frame("main_riv"= main_rivers), area, by = join_by("main_riv" == "are_code"))
+
+# to work with more than one argument to the function I would use mapply
+
+ll <- mapply(get_area, selected_areas$are_id, MoreArgs = list(area=area),SIMPLIFY = FALSE)
+bind_rows(ll)
+```
+
+
+
+# Cedrics join input
+```{r}
+# st_join(points, rivers, join = st_nearest_feature, left = T) 
+# And then you get all variables from rivers.
+# Would that work?
+# The best is to create a table joining all observation id and river segment id. And use it later in your code.
+df.sf <- st_as_sf(df, coords = c("lon", "lat"), crs = 4326)
+df.rs <- df_sf %>%
+  st_join(rs.sf, join = st_nearest_feature, left = T) #%>%
+  #slice_sample(n = 100) %>%
+  select(main_riv)
+
+as_tibble(df.rs) %>%
+  distinct(main_riv)
+
+plot_map_Nord +
+  geom_sf(data = rs.sf) +#, aes(fill = geom)) 
+  geom_sf(data = df.rs, size = 0.2, color = "red")+#, aes(fill = geom)) 
+  theme_bw()
+
+```
+
+df

@@ -1,0 +1,150 @@
+---
+title: "Sötebasen salmon data for DIASPARA 2.2"
+author: "Viktor Thunell"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+format: 
+  html:
+    code-fold: true
+    code-summary: "Show code"
+    page-layout: full
+    embed-resources: true
+knitr: 
+  opts_chunk:
+    fig.align: center
+    out-width: 80%
+editor: source
+execute: 
+  echo: true
+  eval: true
+  cache: false
+---
+
+## Load libraries
+
+```{r libs}
+#| message: true
+#| warning: false
+
+# Load libraries, install if needed
+pkgs <- c("tidyverse", "tidylog","devtools","viridis","patchwork","stringi","readxl","broom","sdmTMB") 
+
+if(length(setdiff(pkgs,rownames(installed.packages()))) > 0){
+  
+    install.packages(setdiff(pkgs, rownames(installed.packages())), dependencies = T)
+  }
+
+invisible(lapply(pkgs, library, character.only = T))
+
+options(ggplot2.continuous.colour = "viridis")
+devtools::source_url("https://raw.githubusercontent.com/VThunell/diasp-lht/main/R/functions/map-plot.R") # message of SHA-1 hash for file
+
+# Set path
+home <- here::here()
+```
+
+## Sötebasen data 
+
+1. Sweden SLU database "Sötebasen"
+    + At locations across Sweden on both the Baltic side and in the Western sea 
+    + From recreational and commercial catches and scientific surveys
+    + We assume these are fish returning to spawn but catches are sometime coastal(!)
+    + Coordinates of sai_location (river or sometimes region, i.e. Baltic Sea or West coast). This is not the exact catch place.
+
+```{r}
+#| warning: true
+#| cache: false
+#| output: false
+
+# Sweden SLU database "Sötebasen"
+sbas.sallaa <- read_delim(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming data/salmon/LaxindividerSötebasen.csv", delim = ";", locale = locale(encoding="latin1"), col_types = cols(Märkning2 = col_character(), Märke2Nr = col_character(), ÅlderLek3 = col_character())) %>%
+  # remove individuals without length or sea age
+  rename(sea_age_year = AdultÅlder,
+         juvenile_age_year = SmoltÅlder,
+         length = Längd,
+         weight_g = Vikt,
+         year = Årtal,
+         origin = Ursprung,
+         sai_location = VattenNamn,
+         stage = Stadium,
+         ) %>%
+  mutate(plus.growth = if_else(Pluszon == "Ja", 1, 0),
+         sai_cou_code = "SWE",
+         date = as.Date(FångstDatum),
+         sex = if_else(Kön %in% c("m","f"), Kön, NA),
+         origin = case_when(origin == "Odlad" ~ "reared",
+                            origin == "Vild" ~ "wild",
+                            .default = origin))
+
+```
+## sb total sb
+```{r}
+sbas.sallaa %>%
+  mutate(is.aged = if_else((is.na(juvenile_age_year) & is.na(sea_age_year)), 0, 1),
+         has.len = if_else(is.na(length), 0, 1),
+         has.wei = if_else(is.na(weight_g), 0, 1)) %>%
+  summarise(n.tot = n(), 
+            n.aged = sum(is.aged), 
+            n.leng = sum(has.len), 
+            n.weig = sum(has.wei)) 
+unique(sbas.sallaa$Serie)
+```
+
+```{r}
+sbas.sallaa %>%
+  #filter((is.na(juvenile_age_year) & is.na(sea_age_year))) %>%
+  #filter(!is.na(length)) %>%
+  summarise(n = n(), .by= "Syfte") %>%
+  arrange(-n)
+```
+
+# sb diaspara
+```{r}
+dia.df <- sbas.sallaa %>%
+  filter(!(is.na(juvenile_age_year) & is.na(sea_age_year)),
+         !is.na(length),
+         !sai_location == c("Vättern","Vänern")) 
+
+dia.df %>%
+  summarise(n = n(), .by = Syfte) %>%
+  arrange(-n)
+```
+
+```{r}
+dia.df %>%
+  summarise(n = n(), .by = c(Syfte, year)) %>%
+  ggplot(aes(year, n, fill = factor(Syfte))) +
+  geom_bar(stat="identity", position = "stack")
+  
+
+```
+
+## Syfte = "Ingen uppgift"
+```{r}
+dia.df %>%
+  filter(Syfte == "Ingen uppgift") %>%
+  distinct(AnstrTyp,InsamlMetod)
+
+dia.df %>%
+  filter(Syfte == "Ingen uppgift") %>%
+  summarise(n = n(), .by = c(sai_location, year)) %>%
+  ggplot(aes(year, n, fill = factor(sai_location))) +
+  geom_bar(stat="identity", position = "stack")
+```
+
+```{r}
+plot_map_Nord +
+  geom_point(data = dia.df %>% 
+               filter(Syfte == "Ingen uppgift") %>%
+               drop_na(WGS84_N_Vatten,WGS84_E_Vatten) %>% 
+               add_utm_columns(ll_names = c("WGS84_E_Vatten", "WGS84_N_Vatten"), utm_crs = 32633), 
+             aes(X*1000, Y*1000), size = 0.3, color = "#440154FF") +
+  labs(title = "Syfte == Ingen uppgift")
+
+```
+
+## Vindelälven
+```{r}
+sbas.sallaa %>%
+  filter(str_detect(Plats, "\\bvindel\\b") | str_detect(sai_location, "\\bvindel\\b"))
+
+```

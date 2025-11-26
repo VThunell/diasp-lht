@@ -1,0 +1,478 @@
+---
+title: "Salmon Biphasic model 4"
+author: "Viktor Thunell" 
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+format: 
+  html:
+    code-fold: true
+    code-summary: "Show code"
+    page-layout: full
+    embed-resources: true
+    toc: true
+knitr: 
+  opts_chunk:
+    fig.align: center
+    out-width: 80%
+editor: source
+execute: 
+  echo: true
+  eval: true
+  cache: true
+---
+
+## Load libraries
+
+```{r libs}
+#| message: false
+#| warning: false
+#| cache: false
+
+# Load libraries, install if needed
+pkgs <- c("tidyverse", "tidylog", "devtools","viridis","nls.multstart", "broom", "patchwork", "coda", "boot", "tidybayes","bayesplot", "nimble", "here")
+
+# remotes::install_github("nimble-dev/nimble", ref = "devel", subdir = "packages/nimble")
+
+if(length(setdiff(pkgs,rownames(installed.packages()))) > 0){
+    install.packages(setdiff(pkgs, rownames(installed.packages())), dependencies = T)
+  }
+
+invisible(lapply(pkgs, library, character.only = T))
+
+options(ggplot2.continuous.colour = "viridis")
+theme_set(theme_light()) # check why global theme option not working when rendering
+# Set path
+color_scheme_set("viridis")
+home <- here::here()
+```
+
+## Read data
+
+```{r}
+#| message: false
+#| warning: false
+#| cache: false
+
+## Read data
+sallaa <- readRDS(file = paste0(home,"/data/data-for-2-2/salmon-laa_2025-09-08.RData")) %>%
+  rename(year = fi_year,
+         site = sai_location,
+         sea.age = sea_age_year,
+         juv.age = juvenile_age_year,
+         tot.age = tot_age_year,
+         lat = fisa_y_4326,
+         lon = fisa_x_4326) %>%
+  filter(!(sea.age == 0 & juv.age == 0)) %>%
+  #filter out non-aged individuals (~90000 individuals)
+  filter(!(is.na(sea.age) & is.na(juv.age))) %>%
+  mutate(hatch.year = year-tot.age) %>% # to filter data based o hatch year instead of year to predict growth pars before catch year
+  filter(!is.na(juv.age),
+         !is.na(year),
+         hatch.year > 1997) %>%
+  filter(!(age.type == "both" & juv.age == 0)) %>%
+  # set na-sex juveniles to male to temporarily deal with the fact that juveniles often are not sexed and that this doesnt matter in the current model:
+  mutate(sex = if_else(is.na(sex) & age.type == "juve.only", "j", sex)) %>%
+  filter(!(is.na(sex) & age.type == "both")) #%>%
+  #filter(!is.na(sex))
+  #slice_sample(n = 80000) #%>%
+  
+
+```
+
+## Plot data
+```{r plot dat}
+sallaa %>%
+  drop_na(sex) %>%
+  ggplot(aes(tot.age, length_mm, color = sex)) +
+  geom_point() +
+  facet_grid(age.type~sex) +
+  scale_x_continuous(breaks = seq(0, 13, 1) ) +
+  theme_light() 
+
+# If dropping all inds where both sea and sm age is NA
+sallaa %>% 
+  ggplot() +
+  geom_density(aes(x = tot.age), fill = "deeppink", alpha = 0.5) +
+  xlim(0, 13) +
+
+sallaa %>% 
+  ggplot() + 
+  geom_density(aes(x = length_mm), fill = "deeppink", alpha = 0.5)
+
+sallaa %>% 
+  drop_na(sea.age,sex) %>%
+  ggplot() +
+  geom_density(aes(x = length_mm, fill = factor(sex)), alpha = 0.5) +
+  facet_wrap(~tot.age)
+
+# age at smoltification by spatial unit
+sallaa %>% 
+  filter(age.type == "both") %>%
+  ggplot() +
+  geom_density(aes(x = juv.age, color = spat.unit),  alpha = 0.5) +
+  facet_wrap(~spat.unit) +
+  xlim(-1, 5)
+
+# juvenile size at age
+sallaa %>%
+  filter(age.type == "juve.only") %>%
+  ggplot(aes(x = juv.age, y =length_mm, color = spat.unit)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = lm) +
+  facet_wrap(~spat.unit)
+
+# size at age zero
+sallaa %>%
+  filter(juv.age == 0) %>%
+  ggplot() +
+  geom_density(aes(x = length_mm), fill = "deeppink", alpha = 0.5) +
+  labs(title = "Age 0")
+  
+```
+
+
+## Check decimal age effect on length
+
+```{r}
+# The majority of age 0 fish are caught in autumn
+sallaa %>%
+  filter(!is.na(tot.age),
+         tot.age == 0) %>%
+  mutate(yday = yday(date)) %>%
+  count(yday) %>%   # counts per day
+  ggplot(aes(x = yday, y = n, group = 1)) +
+  geom_line(color = "steelblue") +
+  geom_vline(xintercept = 365/2, color = "red")
+
+sallaa %>%
+  filter(!is.na(tot.age)) %>%
+  ggplot() +
+  geom_density(aes(x = tot_age_decimyear), fill = "deeppink", alpha = 0.5) +
+  facet_wrap(~tot.age, scales = "free_y")
+
+# But there seems to be a variable effect of time of the year on length
+sallaa %>%
+  filter(age.type == "both") %>%
+  ggplot(aes(x = tot_age_decimyear, y = length_mm, color = spat.unit)) +
+  #geom_point(alpha = 0.5) +
+  facet_wrap(~tot.age, scales = "free_y") +
+  stat_smooth(method = "lm", se = FALSE) #+
+  #stat_smooth(method = "gam", formula = y ~ s(x, k=3))
+  ylim(c(400,1200))
+
+sallaa %>%
+  filter(age.type == "juve.only") %>%
+  ggplot(aes(x = tot_age_decimyear, y = length_mm, color = spat.unit)) +
+  #geom_point(alpha = 0.5) +
+  facet_wrap(~tot.age, scales = "free_y") +
+  stat_smooth(method = "lm", formula = y ~ x, se = FALSE)
+
+# all spatial units grouped
+sallaa %>%
+  filter(age.type == "both") %>%
+  ggplot(aes(x = tot_age_decimyear, y = length_mm, color = factor(tot.age))) +
+  stat_smooth(method = "lm",se = FALSE) +
+  #stat_smooth(method = "gam", formula = y ~ s(x, k=3)) +
+  labs(title = "length regressed over time of year by age class")
+```
+
+## Source model / Load samples
+```{r}
+t <- Sys.time()
+source(file = paste0(home,"/R/model devel/2-2_model_salmon_biphasic6.R"))
+Sys.time() - t
+
+# or read samples
+#samples <- readRDS("/Users/vitl0001/gitProjects/diasp-lht/data/biph6_samples.RData")
+#biph6.samples <- biph6.samples2
+samples <- biph7.samples
+
+```
+
+## Calculate WAIC
+```{r}
+
+#biph6.waic <- calculateWAIC(biph6.samples, biph6.model)
+```
+
+## Trace plots 
+```{r check bpars}
+
+node.sub <- grep("^g\\[", colnames(samples), value = TRUE)
+samples[, node.sub[sample(1:length(node.sub), 10)], drop = FALSE] %>%
+  mcmc_trace()
+
+node.sub <- grep("^par\\[", colnames(samples), value = TRUE)
+samples[, node.sub[sample(1:length(node.sub), 10)], drop = FALSE] %>%
+  mcmc_trace()
+
+node.sub <- grep("^log_p.year\\[", colnames(samples), value = TRUE)
+samples[, node.sub[sample(1:length(node.sub), 10)], drop = FALSE] %>%
+  mcmc_trace()
+
+node.sub <- grep("^lb.mu\\[", colnames(samples), value = TRUE)
+mcmc_trace(samples[, node.sub[sample(1:length(node.sub), 10)], drop = FALSE])
+
+node.sub <- grep("sig.l", colnames(samples), value = TRUE)
+mcmc_trace(samples[, node.sub, drop = FALSE])
+
+#hmmm
+node.sub <- grep("smo.age", colnames(samples), value = TRUE)
+mcmc_trace(samples[, node.sub[sample(1:length(node.sub), 10)], drop = FALSE])
+
+node.sub <- grep("smp", colnames(samples), value = TRUE)
+mcmc_trace(samples[, node.sub[sample(1:length(node.sub), 10)], drop = FALSE])
+
+# l.mu has NAs (for age beyond catch age)
+node.subt <- colnames(samples)[colSums(is.na(samples)) == 0]
+node.sub <- grep("^l.mu\\[", node.subt, value = TRUE)
+mcmc_trace(samples[, node.sub[sample(1:length(node.sub), 10)], drop = FALSE])
+
+```
+
+## Sample distributions
+
+```{r}
+# retrieve names for plotting
+su.labs <- sallaa %>%
+  mutate(spat.unit.int = as.integer(factor(spat.unit))) %>%
+  distinct(spat.unit.int, spat.unit) %>%
+  rename(su = spat.unit.int) 
+su.labs <- su.labs %>%
+  bind_rows(su.labs %>% mutate(su = su+nsu)) %>%
+  { setNames(.$spat.unit, .$su) }
+
+hy.labs <- data %>%
+  distinct(hatch.year, hatch.year.f) %>%
+  rename(hy = hatch.year.f) %>%
+  #deframe()
+  { setNames(.$hatch.year, .$hy) }
+```
+
+### g, lb.mu
+```{r plot bpars}
+# lb.mu[spat.unit]
+samples %>%
+  gather_draws(lb.mu[su], sep = ",") %>%
+  ggplot() +
+  geom_density(aes(x = .value, color = factor(su))) +
+  scale_color_discrete(labels = su.labs) +
+  theme_light() +
+  labs(title = "lb.mu")
+
+# g[spat.unit, hatch.year]
+samples %>%
+  gather_draws(g[su, hy], sep = ",") %>%
+  filter(hy == c(1:5)) %>%
+  ggplot() +
+  geom_density(aes(x = exp(.value), color = factor(hy))) +
+  scale_color_discrete(labels = hy.labs) +
+  facet_wrap(~su, scales = "free", labeller = labeller(sup = su.labs)) +
+  theme_light() +
+  labs(title = "g, juv. growth rate")
+
+samples %>%
+  gather_draws(g[su, hy], sep = ",") %>%
+  ggplot() +
+  geom_boxplot(aes(x = factor(hy), y = .value),
+               outlier.size = 0.5,
+               outlier.alpha = 0.1) +
+  scale_x_discrete(labels = hy.labs) +
+  facet_wrap(~su, scales = "free", labeller = labeller(su = su.labs)) +
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 90,hjust = 1, size = rel(.75))) +
+  labs(title = "g, juv. growth rate")
+  
+  # #median_qi() %>%
+  # ggplot() +
+  # geom_line(aes(x = hy, y = .value, color = factor(su))) +
+  # geom_ribbon(aes(x = hy, ymin = .lower, ymax = .upper, fill = factor(su)), alpha = 0.3) + 
+  # facet_wrap(~su) +
+  # scale_color_discrete(labels = su.labs) +
+  # facet_wrap(~su, scales = "free", labeller = labeller(su = su.labs)) +
+  # theme_light() +
+  # labs(title = "g, juv. growth rate")
+
+data %>%
+  distinct(hatch.year.f,hatch.year,year)%>%
+  arrange(hatch.year)
+data %>%
+  distinct(year,year.f,hatch.year) %>%
+  arrange(year)
+min(data$hatch.year)+maxyear
+
+max(data$hatch.year) + 
+  data %>%
+  filter(year == max(year)) %>%
+  filter(tot.age == max(tot.age)) %>%
+  distinct(tot.age) %>% pull(tot.age)
+minyear <- min(data$hatch.year.f)
+
+```
+
+### par 1 / Linf
+```{r }
+
+samples %>%
+  gather_draws(log_p.year[hy, sup], sep = ",") %>%
+  filter(sup %in% 1:nsu) %>%
+  ggplot() +
+  geom_density(aes(x = exp(.value), color = factor(hy))) +
+  scale_color_discrete(labels = hy.labs) +
+  facet_wrap(~sup, scales = "free", labeller = labeller(sup = su.labs)) +
+  theme_light() +
+  labs("Linf")
+
+tmp <- samples %>%
+  gather_draws(log_p.year[hy, sup], sep = ",") %>%
+  filter(sup %in% 1:nsu)
+tmp %>%
+  ggplot() +
+  geom_boxplot(aes(x = factor(hy), y = exp(.value)),
+               outlier.size = 0.5,
+               outlier.alpha = 0.1) +
+  scale_x_discrete(labels = hy.labs) +
+  facet_wrap(~sup, scales = "free", labeller = labeller(sup = su.labs)) +
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 90,hjust = 1, size = rel(.75))) +
+  labs(title = "Linf")
+
+```
+
+### par 2 / k
+```{r }
+# par 2
+samples %>%
+  gather_draws(log_p.year[hy, sup], sep = ",") %>%
+  filter(sup %in% (nsu+1):npars) %>%
+  ggplot() +
+  geom_density(aes(x = .value, color = factor(hy))) +
+  scale_color_discrete(labels = hy.labs) +
+  facet_wrap(~sup, scales = "free", labeller = labeller(sup = su.labs)) +
+  theme_minimal() +
+  labs("k")
+
+tmpk <- samples %>%
+  gather_draws(log_p.year[hy, sup], sep = ",") %>%
+  filter(sup %in% (nsu+1):npars)
+tmpk %>%
+  ggplot() +
+  geom_boxplot(aes(x = factor(hy), y = .value),
+               outlier.size = 0.5,
+               outlier.alpha = 0.1) +
+  scale_x_discrete(labels = hy.labs) +
+  facet_wrap(~sup, scales = "free", labeller = labeller(sup = su.labs)) +
+  theme_light() +
+  theme(axis.text.x = element_text(angle = 90,hjust = 1, size = rel(.75))) +
+  labs(title = "k")
+
+```
+
+### l.mu
+```{r check blmu}
+#samp.lmu <- biph5.con.samp.lmu
+# remove NA nodes (the older-than-catch-age nodes)
+node.subt <- colnames(samples)[colSums(is.na(samples)) == 0]
+node.sub <- grep("^l.mu\\[", node.subt, value = TRUE)
+
+tmpl <- samples[, node.sub, drop = FALSE] %>%
+  gather_draws(l.mu[gy,id], sep = ",") %>%
+  left_join(data %>% select(ind.id,spat.unit,hatch.year,age.type,site), join_by(id == ind.id)) %>%
+  rename(su = spat.unit)
+
+# plot density by growth curve
+tmpl %>%
+  ungroup(id) %>% # to summarise over gy only
+  ggplot() +
+  geom_boxplot(aes(x = factor(gy), y = .value, color = age.type),
+               outlier.shape = NA,
+               #outlier.alpha = 0.1
+               )# +
+  facet_wrap(~su, labeller = labeller(su = su.labs))
+  geom_point(data = data, aes(x = tot.age.dec, y = length_mm, color = spat.unit), alpha = 0.1)
+  
+  
+
+```
+
+
+
+```{r check blmu}
+# plot observed against predicted
+obs <- data %>%
+  select(length_mm,tot.age,ind.id,spat.unit) %>%
+  mutate(tot.age = round(tot.age),
+         observed = length_mm)
+
+dataNodes <- biph5.con.model$getNodeNames(dataOnly = TRUE)
+  parentNodes <- biph5.con.model$getParents(dataNodes, stochOnly = TRUE)       #all of these should be added to monitor below to recreate other model variables...
+  stnodes <- biph5.con.model$getNodeNames(stochOnly = TRUE, includeData = FALSE)
+  allvars<-biph5.con.model$getVarNames(nodes = stnodes)
+  mvars<-allvars[!(grepl("lifted",allvars))]  
+gc()
+predi <- samp.cl[,1:3000] %>%
+  gather_draws(l.mu[age.i,ind.id], sep = ",") %>%
+  median_qi() %>%
+  rename(predicted = .value) %>%
+  #mutate(tot.age = age.i-1) %>%
+  filter(tot.age %in% obs$tot.age & ind.id %in% obs$ind.id)
+
+plusg.po <- predi %>%
+  left_join(obs, by = join_by(tot.age, ind.id)) %>%
+  drop_na(observed) %>%
+  ggplot(aes(x = observed, y = predicted, color = factor(spat.unit))) +
+  geom_point(size = 2, alpha = 0.5) +
+  geom_errorbar(aes(ymin = .lower, ymax = .upper), width = 0.2, alpha = 0.5) +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  theme_minimal() +
+  ylim(0,1300) +
+  xlim(0,1300) 
+
+predi %>%
+  left_join(obs, by = join_by(tot.age, ind.id)) %>%
+  #drop_na(observed) %>%
+  mutate(op.rat = if_else(is.na(observed), NA, observed/predicted)) %>%
+  #filter(op.rat < 0.5 | is.na(op.rat)) %>%
+  filter(op.rat < 0.5) %>%
+  #arrange(factor(ind.id))
+  pull(ind.id) %>% 
+  sallaa[.,]
+
+predi %>%
+  left_join(obs, by = join_by(tot.age, ind.id)) %>%
+  group_by(ind.id) %>%
+  mutate(spat.unit = ifelse(is.na(spat.unit), first(na.omit(spat.unit)), spat.unit)) %>%
+  ungroup() %>%
+  ggplot() +
+  geom_line(aes(tot.age, predicted, color = ind.id, group = ind.id)) +
+  geom_point(aes(tot.age, observed, color = ind.id, group = ind.id), alpha = 0.2) +
+  facet_wrap(~spat.unit)
+
+```
+
+### smolt ages
+```{r }
+data %>%
+  filter(!is.na(smo.age)) %>%
+  select(smo.age) %>%
+  mutate(t = "obs") %>%
+  bind_rows( biph5.con.samp.smo %>% gather_draws(smo.age[i]) %>% rename(smo.age = .value) %>% mutate(t = "pred")) %>%
+  ggplot() +
+  geom_density(aes(smo.age, fill = t))
+```
+
+## AIC comparison
+
+```{r}
+biph5.samp$WAIC$WAIC
+biph5.con.samp$WAIC$WAIC
+biph5.samp.lmu$WAIC$WAIC
+biph5.con.samp.lmu$WAIC$WAIC
+biph5.samp.smo$WAIC$WAIC
+biph5.con.samp.smo$WAIC$WAIC
+```
+
+```{r}
+plusg.po + inte.po
+```
+
+
