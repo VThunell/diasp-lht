@@ -22,6 +22,8 @@ execute:
 
 ## Load libraries
 
+
+
 ```{r libs}
 #| message: false
 #| warning: false
@@ -32,7 +34,7 @@ pkgs <- c("tidyverse", "tidylog", "devtools","viridis","nls.multstart", "broom",
 
 # remotes::install_github("nimble-dev/nimble", ref = "devel", subdir = "packages/nimble")
 
-if(length_mm(setdiff(pkgs,rownames(installed.packages()))) > 0){
+if(length(setdiff(pkgs,rownames(installed.packages()))) > 0){
     install.packages(setdiff(pkgs, rownames(installed.packages())), dependencies = T)
   }
 
@@ -52,10 +54,7 @@ home <- here::here()
 #| warning: false
 #| cache: false
 
-salfec <- readRDS(file = paste0(home,"/data/data-for-2-2/salmon-fec_2025-06-19.RData"))
-
-  #filter out non-aged individuals (~34000 individuals)
-  #filter(!(is.na(age.sea) & is.na(age.sm))) #%>% 
+salfec <- readRDS(file = paste0(home,"/data/data-for-2-2/salmon-fec_2025-09-08.RData"))
 
 ```
 
@@ -63,14 +62,10 @@ For now I will use the "both" type only.
 
 ```{r}
 # Create a new dataset 
-# salfec <- salfec %>%
-#   filter(age.type == "both")
 
 salfec %>%
-  #drop_na(sex) %>%
   ggplot() +
   geom_histogram(aes( x = n.eggs))
-
 
 salfec %>%
   #drop_na(sex) %>%
@@ -89,28 +84,22 @@ salfec %>%
   ggplot(aes(log(length_mm), log(n.eggs), color = sai_location)) +
   geom_point() 
 
+# mean-variance over location
+salfec %>%
+  summarise(mean = mean(n.eggs), var  = var(n.eggs),ratio = var/mean, .by = 
+              sai_location) %>%
+  ggplot() +
+  geom_point(aes(mean,var))
+
 ```
 
-# 
 
 ```{r}
-
-# If dropping all inds where both sea and sm age is NA 
 salfec %>%
   filter(!is.na(weight_g)) %>%
   ggplot(aes(length_mm, n.eggs, color = sai_location)) +
   geom_point()
 
-#   
-# salfec2 %>% 
-#   ggplot() + 
-#   geom_density(aes(x = length_mm), fill = "deeppink", alpha = 0.5)
-#   
-# salfec2 %>% 
-#   ggplot() +
-#   geom_density(aes(x = length_mm, fill = factor(age.tot)), alpha = 0.5) +
-#   #geom_histogram(aes(x = length_mm)) +
-#   facet_wrap(~age.tot, scales = "free")
 ```
 
 ## 1. Spatial model sex covariate
@@ -129,45 +118,45 @@ fec1.code <- nimbleCode({
   for(i in 1:nobs){
     
     n.eggs[i] ~ dnorm(mu[i], sd = sigma)
-    mu[i] <- a[sai_location[i]]*length_mm[i]^b[sai_location[i]]
-  
+    mu[i] <- a[su[i]]*length_mm[i]^b[su[i]]
+   
   }
 
   # priors
   sigma ~ dexp(1/10000)
   
   for(j in 1:nloc){
-    a[j] ~ dnorm(0, 1)
+    #a[j] ~ dnorm(1, .1) #poor convergence but lower AIC cf dlnomr
+    #a[j] ~ dlnorm(1, .1) # better conv. but lower AIC than dgammma
+    a[j] ~ dgamma(mean = 1, sd = 1)
     b[j] ~ dnorm(0, 1)
   }
   
 })
   
-# initial values generating function
-# inits <- function(){
-#   list(a = rnorm(1,0,1,
-#              rnorm(1,0.4,0.3),
-#              rnorm(1,-1.2,1.4)),
-#        
-#        mub1 = rnorm(1,100,50),
-#        mub2 = rnorm(1,0.5,0.5),
-#        sig_par = c(rlnorm(1,-0.60,0.30),
-#                    rlnorm(1,-3,0.05),
-#                    rlnorm(1,-1,0.05)))}
+nloc <- length(unique(data$sai_location))
 
-data <- salfec %>%
+#initial values generating function
+inits <- function(){
+  list(a = rgamma(nloc,1,1),
+       b = rnorm(nloc,0,1),
+       sigma = rlnorm(1,log(1000),0.1))}
+
+data.fec <- salfec %>%
   mutate(sai_location.int = as.integer(factor(sai_location))) %>%
   drop_na(sai_location)
 
-nloc <- length(unique(data$sai_location))
 # build model
 fec1.model <- nimbleModel(fec1.code,
-                        constants = list(nloc = nloc,
+                          constants = list(nloc = nloc,
                                          nobs = nrow(data),
                                          sai_location = data$sai_location.int),
-                        #inits=inits(),
-                        data = data %>% select(n.eggs, length_mm),
-                        buildDerivs = TRUE)
+                          inits=inits(),
+                          data = data %>% select(n.eggs, length_mm),
+                          buildDerivs = TRUE)
+
+fec1.model$simulate()
+fec1.model$calculate()
 
 ```
 
@@ -176,7 +165,7 @@ fec1.model <- nimbleModel(fec1.code,
 ```{r}
 # configure hmc
 fec1.confhmc <- configureHMC(fec1.model, 
-                               monitors = c("a", "b"),
+                               monitors = c("a", "b","sigma"),
                                enableWAIC = TRUE)
   
 # build mcmc (use buidlHMC() when not using configureHMC())
@@ -186,7 +175,7 @@ fec1.hmc <- buildMCMC(fec1.confhmc)
 fec1.c <- compileNimble(fec1.model)
 
 # compile mcmc  and specify the project model
-fec1.hmcc <- compileNimble(fec1.hmc)#, project = vbgf2a.c)
+fec1.hmcc <- compileNimble(fec1.hmc)
 
 ```
 
@@ -194,15 +183,15 @@ fec1.hmcc <- compileNimble(fec1.hmc)#, project = vbgf2a.c)
 
 ```{r}
 #help(NUTS)
+fec1.samp <- runMCMC(fec1.hmcc, niter = 10000, nburnin = 5000, nchains = 2, samplesAsCodaMCMC = TRUE, WAIC=TRUE)
 
-fec1.samp <- runMCMC(fec1.hmcc, niter = 5000, nburnin = 3000, nchains = 2, samplesAsCodaMCMC = TRUE, WAIC=TRUE)
-
+fec1.samp$WAIC
 ```
 
 #### Check/plot samples
 
 ```{r}
-samp <- fec1.samp$samples
+samp <- fec.samp$samples
 summary(samp)
 
 #length_mm at age for the inds where sex is assigned by the model.
@@ -251,25 +240,34 @@ for(i in seq(0, n, by = pn)){
   print(mcmc_trace(samp, pars = vars(i:m)))
 }
 
-gelman.diag(samp$samples[1:2,])
+gelman.diag(samp)
 effectiveSize(samp)
 
-fec1.samp$samples %>%
-  gather_draws(a[sai_location], b[sai_location]) %>%
-  #filter(!sai_location == 19) %>%
+fec.samp$samples %>%
+  gather_draws(a[su], b[su]) %>%
   ggplot() +
-  geom_density(aes(x = .value, color = factor(sai_location))) + # age parameter
-  facet_wrap(~.variable, scales = "free", nrow = 3) +
+  geom_density(aes(x = .value, color = factor(su))) + # age parameter
+  facet_wrap(~.variable, scales = "free") +
+  theme_light()
+  
+fec.samp$samples %>%
+  gather_draws(a[su]) %>%
+  median_qi()
+  filter(.variable == "a") %>%
+  ggplot() +
+  geom_boxplot(aes(y = .value, x = factor(su)),
+               outliers = FALSE) + # age parameter
+  #facet_wrap(~sai_location, scales = "free") +
   theme_light()
 ```
 
 ```{r}
-sai_location.name <- data %>%
-  select(sai_location.int, sai_location, lat) %>%
+su.name <- data.fec %>%
+  select(su, spat.unit, fisa_y_4326) %>%
   distinct() 
 
 samp %>%
-  spread_draws(a[sai_location.int], b[sai_location.int]) %>%
+  spread_draws(a[su], b[su]) %>%
   # mutate(males = case_when(pars == 1 ~ par + b1,
   #                          pars == 2 ~ par + b2, 
   #                         .default = par),
@@ -280,21 +278,18 @@ samp %>%
   # pivot_longer(cols = c("males", "females"), names_to = "sex", values_to = "value") %>%
   # group_by(sex,emu,pars) %>%
   median_qi() %>%
-  left_join(sai_location.name) %>% 
-  filter(!is.na(sai_location)) %>%
+  left_join(su.name) %>% 
   expand_grid(length_mm = seq(1, 1300, 0.1)) %>%
-  mutate(fecundity = a*length_mm^b, .by = "sai_location" ) %>%
+  mutate(fecundity = a*length_mm^b, .by = su ) %>%
   ggplot() +
-  geom_line(aes(y = fecundity, x = length_mm, color = sai_location)) +
-  geom_point(data = data, aes(y = n.eggs, x = length_mm, color = sai_location), alpha = 0.5) +
-  facet_wrap(~sai_location, scales = "fixed") 
+  geom_line(aes(y = fecundity, x = length_mm, color = spat.unit), show.legend = FALSE) +
+  geom_point(data = data.fec, aes(y = n.eggs, x = length_mm, color = spat.unit), show.legend = FALSE, alpha = 0.5) +
+  facet_wrap(~spat.unit, scales = "fixed") 
   #scale_shape_manual(values = c(1, 4)) +
   #labs(x = "mean latitudes within emu")
 ```
 
 ### b. log(F) = a + b\*L
-
-Using a multivariate normal prior on VGBF params (LKJ prior). Non sexed individuals (sex = NA which are \~30%, mainly from France) are estimated in the model.
 
 #### Model
 
@@ -322,19 +317,19 @@ fec2.code <- nimbleCode({
   
 })
   
-data <- salfec %>%
+data.fec <- salfec %>%
   mutate(sai_location.int = as.integer(factor(sai_location))) %>%
   drop_na(sai_location)
 
-nloc <- length_mm(unique(data$sai_location))
+nloc <- length_mm(unique(data.fec$sai_location))
 
 # build model
 fec2.model <- nimbleModel(fec2.code,
                         constants = list(nloc = nloc,
-                                         nobs = nrow(data),
-                                         sai_location = data$sai_location.int),
+                                         nobs = nrow(data.fec),
+                                         sai_location = data.fec$sai_location.int),
                         #inits=inits(),
-                        data = data %>% select(n.eggs, length_mm),
+                        data = data.fec %>% select(n.eggs, length_mm),
                         buildDerivs = TRUE)
 
 ```
@@ -374,9 +369,9 @@ samp <- fec2.samp$samples
 summary(samp)
 
 #length_mm at age for the inds where sex is assigned by the model.
-# data %>%
+# data.fec %>%
 #   bind_cols(sex2 = samp$sex) %>%
-#   filter(row_number() %in% which(is.na(data$sex))) %>%
+#   filter(row_number() %in% which(is.na(data.fec$sex))) %>%
 #   ggplot(aes(age.tot, length_mm, color = factor(sex2))) +
 #   geom_point()
 
@@ -433,7 +428,7 @@ fec1.samp$samples %>%
 ```
 
 ```{r}
-sai_location.name <- data %>%
+sai_location.name <- data.fec %>%
   select(sai_location.int, sai_location, lat) %>%
   drop_na(sai_location) %>%
   distinct() 
@@ -456,7 +451,7 @@ samp %>%
   mutate(fecundity = exp(a+log(length_mm)*b), .by = "sai_location" ) %>%
   ggplot() +
   geom_line(aes(y = fecundity, x = length_mm, color = sai_location)) +
-  geom_point(data = data, aes(y = n.eggs, x = length_mm, color = sai_location), alpha = 0.5) +
+  geom_point(data = data.fec, aes(y = n.eggs, x = length_mm, color = sai_location), alpha = 0.5) +
   facet_wrap(~sai_location, scales = "fixed") 
   #scale_shape_manual(values = c(1, 4)) +
   #labs(x = "mean latitudes within emu")
@@ -496,19 +491,19 @@ fec3.code <- nimbleCode({
   
 })
   
-data <- salfec %>%
+data.fec <- salfec %>%
   mutate(sai_location.int = as.integer(factor(sai_location))) %>%
   drop_na(sai_location)
 
-nloc <- length_mm(unique(data$sai_location))
+nloc <- length(unique(data.fec$sai_location))
 
 # build model
 fec3.model <- nimbleModel(fec3.code,
                         constants = list(nloc = nloc,
-                                         nobs = nrow(data),
-                                         sai_location = data$sai_location.int),
+                                         nobs = nrow(data.fec),
+                                         sai_location = data.fec$sai_location.int),
                         #inits=inits(),
-                        data = data %>% select(n.eggs, length_mm),
+                        data = data.fec %>% select(n.eggs, length_mm),
                         buildDerivs = TRUE)
 
 ```
@@ -537,7 +532,7 @@ fec3.hmcc <- compileNimble(fec3.hmc)#, project = vbgf2a.c)
 ```{r}
 #help(NUTS)
 
-fec3.samp <- runMCMC(fec3.hmcc, niter = 5000, nburnin = 3000, nchains = 2, samplesAsCodaMCMC = TRUE, WAIC=TRUE)
+fec3.samp <- runMCMC(fec3.hmcc, niter = 5000, nburnin = 3000, nchains = 1, samplesAsCodaMCMC = TRUE, WAIC=TRUE)
 
 ```
 
@@ -553,9 +548,9 @@ samp <- fec3.samp$samples
 summary(samp)
 
 #length_mm at age for the inds where sex is assigned by the model.
-# data %>%
+# data.fec %>%
 #   bind_cols(sex2 = samp$sex) %>%
-#   filter(row_number() %in% which(is.na(data$sex))) %>%
+#   filter(row_number() %in% which(is.na(data.fec$sex))) %>%
 #   ggplot(aes(age.tot, length_mm, color = factor(sex2))) +
 #   geom_point()
 
@@ -654,18 +649,18 @@ fec4.code <- nimbleCode({
 #                    rlnorm(1,-3,0.05),
 #                    rlnorm(1,-1,0.05)))}
 
-data <- salfec %>%
+data.fec <- salfec %>%
   mutate(sai_location.int = as.integer(factor(sai_location))) %>%
   drop_na(sai_location, weight_g)
 
-nloc <- length_mm(unique(data$sai_location))
+nloc <- length_mm(unique(data.fec$sai_location))
 # build model
 fec4.model <- nimbleModel(fec4.code,
                         constants = list(nloc = nloc,
-                                         nobs = nrow(data),
-                                         sai_location = data$sai_location.int),
+                                         nobs = nrow(data.fec),
+                                         sai_location = data.fec$sai_location.int),
                         #inits=inits(),
-                        data = data %>% select(n.eggs, length_mm, weight_g),
+                        data = data.fec %>% select(n.eggs, length_mm, weight_g),
                         buildDerivs = TRUE)
 
 ```
@@ -705,9 +700,9 @@ samp <- fec1.samp$samples
 summary(samp)
 
 #length_mm at age for the inds where sex is assigned by the model.
-# data %>%
+# data.fec %>%
 #   bind_cols(sex2 = samp$sex) %>%
-#   filter(row_number() %in% which(is.na(data$sex))) %>%
+#   filter(row_number() %in% which(is.na(data.fec$sex))) %>%
 #   ggplot(aes(age.tot, length_mm, color = factor(sex2))) +
 #   geom_point()
 
@@ -750,7 +745,7 @@ for(i in seq(0, n, by = pn)){
   print(mcmc_trace(samp, pars = vars(i:m)))
 }
 
-gelman.diag(samp$samples[1:2,])
+gelman.diag(samp)
 effectiveSize(samp)
 
 fec1.samp$samples %>%
@@ -939,7 +934,7 @@ fec1.samp$samples %>%
 
 <!--   ggplot() + -->
 
-<!--   geom_point(data = data, aes(age.tot, length_mm), alpha = 0.1, color = "lightblue") + -->
+<!--   geom_point(data = data.fec, aes(age.tot, length_mm), alpha = 0.1, color = "lightblue") + -->
 
 <!--   geom_line(aes(age, length_mm)) + -->
 
@@ -1117,7 +1112,7 @@ fec1.samp$samples %>%
 
 <!--                    rlnorm(1,-1,0.05)))} -->
 
-<!-- data <- sallaa %>% -->
+<!-- data.fec <- sallaa %>% -->
 
 <!--   mutate(sex = as.integer(if_else(sex == "f", 0, 1)), -->
 
@@ -1133,13 +1128,13 @@ fec1.samp$samples %>%
 
 <!--                                          nsu = nsu, -->
 
-<!--                                          nobs = nrow(data), -->
+<!--                                          nobs = nrow(data.fec), -->
 
-<!--                                          spat.unit = data$spat.unit), -->
+<!--                                          spat.unit = data.fec$spat.unit), -->
 
 <!--                         inits=inits(), -->
 
-<!--                         data = data -->
+<!--                         data = data.fec -->
 
 <!--                         %>% select(age.tot,length_mm,sex), -->
 
@@ -1205,11 +1200,11 @@ fec1.samp$samples %>%
 
 <!-- # length_mm at age for the inds where sex is assigned by the model. -->
 
-<!-- data %>% -->
+<!-- data.fec %>% -->
 
 <!--   bind_cols(sex2 = vbgf2a.c$sex) %>% -->
 
-<!--   filter(row_number() %in% which(is.na(data$sex))) %>% -->
+<!--   filter(row_number() %in% which(is.na(data.fec$sex))) %>% -->
 
 <!--   ggplot(aes(age.tot, length_mm, color = factor(sex2))) + -->
 
@@ -1487,7 +1482,7 @@ fec1.samp$samples %>%
 
 <!-- npars <- 3 -->
 
-<!-- A1 <- min(data$age.tot) -->
+<!-- A1 <- min(data.fec$age.tot) -->
 
 <!-- A2 <- max(data$age.tot) -->
 
