@@ -1,0 +1,442 @@
+---
+title: "Eel model v1" 
+author: "Viktor Thunell" 
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+format: 
+  html:
+    page-layout: full
+    embed-resources: true
+knitr: 
+  opts_chunk:
+    fig.align: center
+    out-width: 80%
+editor: source
+execute: 
+  echo: false
+  eval: true
+  cache: true
+---
+
+## Load libraries
+```{r libs}
+#| message: false
+#| warning: false
+#| cache: false
+
+# Load libraries, install if needed
+pkgs <- c("tidyverse", "tidylog", "devtools","viridis","nls.multstart", "broom", "patchwork", "rjags", "coda", "boot", "tidybayes","bayesplot", "nimbleHMC")
+
+if(length(setdiff(pkgs,rownames(installed.packages()))) > 0){
+    install.packages(setdiff(pkgs, rownames(installed.packages())), dependencies = T)
+  }
+
+invisible(lapply(pkgs, library, character.only = T))
+
+options(ggplot2.continuous.colour = "viridis")
+theme_set(theme_light()) # check why global theme option not working when rendering
+# Set path
+
+home <- here::here()
+```
+
+## Read data
+```{r}
+#| message: false
+#| warning: false
+#| cache: false
+
+load(file = "/Users/vitl0001/Documents/Projects/DIASPARA/Incoming data/eel/individual_wide.RData")
+
+names(individual_wide)
+```
+
+## Edit data
+```{r}
+#these are questionable:
+individual_wide %>%
+  drop_na(lengthmm) %>% #length also contains a few NA
+  filter(lengthmm > 1000 & weightg < 500)
+  
+# drop na lengths, filter out questionable l-w.s, change name of sex variable and set "NA"-chars to NA
+eel.indw <- individual_wide %>%
+  drop_na(lengthmm) %>%
+  filter(!(lengthmm > 1000 & weightg < 500)) %>%
+  rename(is.fem = female_proportion) %>%
+  mutate(fi_lfs_code = if_else(fi_lfs_code == "NA", NA, fi_lfs_code))
+
+```
+## counts
+
+```{r}
+eel.indw %>% 
+  ggplot() +
+  geom_histogram(aes(x = ageyear), alpha = 0.3) 
+  
+
+```
+
+## Percentages NA
+```{r}
+# percent NA of w, l, age and sex
+individual_wide %>%
+  select(weightg, lengthmm, ageyear, female_proportion) %>%
+  map(~ mean(is.na(.)))
+
+# n where there is sex, length and age
+individual_wide %>%
+  drop_na(female_proportion, lengthmm, ageyear) %>%
+  count()
+
+```
+
+Age and sex has plenty of NAs. Removing all Na from the most relevant variables gives ~39000 individuals.
+
+## Plot length, weight and age
+```{r}
+# eel.indw %>%
+#   drop_na(is.fem) %>%
+#   ggplot() +
+#   geom_density(aes(x = lengthmm, fill = factor(is.fem)), alpha = 0.5) +
+#   facet_wrap(~fi_lfs_code) 
+eel.indw %>% 
+  ggplot() +
+  geom_density(aes(x = lengthmm, fill = factor(is.fem)), alpha = 0.3) +
+  #geom_histogram(aes(x = lengthmm, fill = factor(is.fem)))+
+  facet_wrap(~is.fem, scales = "free")
+
+# lfs G and GY are not sex determined
+eel.indw %>% 
+  ggplot() +
+  geom_density(aes(x = lengthmm, fill = factor(is.fem)), alpha = 0.3) +
+  #geom_histogram(aes(x = lengthmm, fill = factor(is.fem)))+
+  facet_wrap(~fi_lfs_code, scales = "free")
+
+eel.indw %>% 
+  ggplot() +
+  geom_point(aes(lengthmm, weightg, color = factor(is.fem))) +
+  facet_wrap(~is.fem)
+
+# length at age 
+eel.indw %>%
+  drop_na(ageyear) %>%
+  filter(is.fem == 1) %>%
+  ggplot() +
+  geom_point(aes(ageyear, lengthmm, color = factor(fi_lfs_code)), size = 0.1, alpha = 0.5) +
+  facet_wrap(~ser_emu_nameshort) +
+  labs(title = "females")
+
+eel.indw %>%
+  drop_na(ageyear) %>%
+  filter(is.fem == 0) %>%
+  ggplot() +
+  geom_point(aes(ageyear, lengthmm, color = factor(fi_lfs_code)), size = 0.1, alpha = 0.8) +
+  facet_wrap(~ser_emu_nameshort) +
+  labs(title = "males")
+
+n <- eel.indw %>%
+  drop_na(ageyear) %>%
+  filter(fi_lfs_code == "Y") %>%
+  count()
+
+eel.indw %>%
+  drop_na(ageyear) %>%
+  filter(fi_lfs_code == "Y") %>%
+  ggplot() +
+  geom_point(aes(ageyear, lengthmm, color = factor(is.fem)), size = 0.1, alpha = 0.8) +
+  facet_wrap(~ser_emu_nameshort) +
+  labs(title = paste0("n = ", n))
+
+```
+Length at age is very variable, even within sex and EMU. Male growth (or data) are very diffeernet from females-
+
+## Models 
+### a. All vbgf pars
+
+```{r}
+e.vbgf1a.code <- nimbleCode({
+  
+  # likelihood
+  for(i in 1:nobs){
+    length[i] ~ dnorm(mu[i], sd = sigma)
+    mu[i] <- klt[1]*(1-exp(-(klt[2]*(age[i]-klt[3]))))
+    }
+  
+  # priors
+  sigma ~ dunif(0, 150)
+  
+  #LKJ prior on correlation matrix, see NIMBLE manual p45.
+  Ustar[1:npars,1:npars] ~ dlkj_corr_cholesky(1.3, npars) # eta = 1.3
+  U[1:npars,1:npars] <- uppertri_mult_diag(Ustar[1:npars, 1:npars], sig_klt[1:npars])
+
+  klt[1:npars] ~ dmnorm(mu_klt[1:3], cholesky = U[1:3, 1:3], prec_param = 0)
+  
+  # mu and 2*sd from fishbase (increased mu beacuse its too small)
+  mu_klt[1] ~ dnorm(1100, sd = 2*110)
+  mu_klt[2] ~ dnorm(0.13, sd = 0.06)
+  mu_klt[3] ~ dnorm(-0.5, sd = 0.25)
+  # mu and 2*sd from fishbase
+  sig_klt[1] ~ dlnorm(log(110),1)
+  sig_klt[2] ~ dlnorm(log(0.13),1)
+  sig_klt[3] ~ dlnorm(log(0.25),1)
+
+  })
+
+# Function creating the Cholesky of the covar. matrix (p45 Nimble manual)
+uppertri_mult_diag <- nimbleFunction(
+  run = function(mat = double(2), vec = double(1)) {
+    returnType(double(2))
+    p <- length(vec)
+    out <- matrix(nrow = p, ncol = p, init = FALSE)
+    for(k in 1:p)
+      out[ , k] <- mat[ , k] * vec[k]
+    return(out)
+   # turn off buildDerivs for the i index
+}, #buildDerivs = list(run = list(ignore = c('k')))
+) 
+
+e.data = eel.indw %>% 
+  rename(age = ageyear, 
+         length = lengthmm, 
+         sex = is.fem, 
+         emu = ser_emu_nameshort) %>%
+  #mutate(#sex = as.integer(if_else(sex == "f", 0, 1)),
+         #emu = as.integer(factor(eel.indw$ser_emu_nameshort))) %>% 
+  filter(fi_lfs_code == "Y") %>%
+  drop_na(sex, length, emu, age)
+
+npars <- 3
+#nsu <- length(unique(e.data$emu))
+
+inits <- function(){
+  list(mu_klt = c(rnorm(1, 1100, 2*110), 
+                  rnorm(1, 0.13, 0.06),
+                  rnorm(1, -0.50, 0.25)), 
+       sig_klt = c(rlnorm(1,log(110),0.30),
+                   rlnorm(1,log(0.06),0.05),
+                   rlnorm(1,log(0.25),0.05)))}
+
+# create NIMBLE model
+e.vgbf1.model <- nimbleModel(e.vbgf1a.code,
+                             constants = list(npars=npars, 
+                                         #nsu = nsu, 
+                                         nobs = nrow(e.data)
+                                         #emu = e.data$emu),
+                                         ),
+                             inits=inits(),
+                             data = e.data %>% select(age,length,sex))
+```
+
+
+```{r}
+# compile model
+e.vbgf1a.c <- compileNimble(e.vgbf1.model)
+# configure mcmc
+e.vbgf1a.conf <- configureMCMC(e.vbgf1a.c, print=TRUE, useConjugacy = FALSE)#, monitors =  c("klt"), enableWAIC = TRUE)
+# build mcmc
+e.vbgf1a.mcmc <- buildMCMC(e.vbgf1a.conf)
+# compile mcmc and specify the project model
+e.vbgf1a.mcmc.c <- compileNimble(e.vbgf1a.mcmc)
+
+```
+
+#### Samples
+removing output: "warning: logProb of data node length[7]: logProb less than -1e12."
+```{r}
+#| output: false
+# sample model
+e.vbgf1a.samp <- runMCMC(e.vbgf1a.mcmc.c, nchains = 2, niter = 70000, nburnin = 60000, samplesAsCodaMCMC = TRUE)#, WAIC=TRUE)
+
+# vbgf1d.samp <- runMCMC(vbgf1d.mcmc.c, nchains = 2, niter = 25000, nburnin = 20000, thin=2, samplesAsCodaMCMC = TRUE, WAIC=TRUE)
+```
+
+
+```{r}
+summary(e.vbgf1a.samp)
+mcmc_trace(e.vbgf1a.samp)
+effectiveSize(e.vbgf1a.samp)
+```
+
+### b. Spatial sex covar. for all vbgf pars
+
+```{r}
+e.vbgf1b.code <- nimbleCode({
+  
+  for(i in 1:nobs){
+    length[i] ~ dnorm(mu[i], sd = sigma)
+    mu[i] <- (klt[emu[i],1] + b1[emu[i]]*sex[i]) *
+      (1-exp(-(klt[emu[i],2] + b2[emu[i]]*sex[i]) * (age[i]-klt[emu[i],3])))
+    }
+  
+  # Priors
+  sigma ~ dunif(0, 150)
+  
+  # LKJ prior on correlation matrix, see NIMBLE manual p45.
+  Ustar[1:npars,1:npars] ~ dlkj_corr_cholesky(1.3, npars) # eta = 1.3
+  U[1:npars,1:npars] <- uppertri_mult_diag(Ustar[1:npars, 1:npars], sig_klt[1:npars])
+  
+  for(j in 1:nsu){
+    klt[j, 1:npars] ~ dmnorm(mu_klt[1:npars], cholesky = U[1:npars, 1:npars], prec_param = 0)
+    b1[j] ~ dnorm(mub1, sd = sb1)
+    b2[j] ~ dnorm(mub2, sd = sb2)
+  }
+  
+  # mu and 2*sd from fishbase
+  mu_klt[1] ~ dnorm(1300, sd = 110)
+  mu_klt[2] ~ dnorm(0.13, sd = 0.06)
+  mu_klt[3] ~ dnorm(-0.5, sd = 0.25)
+  # mu and 2*sd from fishbase
+  sig_klt[1] ~ dlnorm(log(110),1)
+  sig_klt[2] ~ dlnorm(log(0.06),1)
+  sig_klt[3] ~ dlnorm(log(0.25),1)
+
+  mub1 ~ dnorm(0, 0.01)
+  mub2 ~ dnorm(0, 0.01)
+  sb1 ~ dunif(0, 10)
+  sb2 ~ dunif(0, 10)
+  
+})
+
+# Function creating the Cholesky of the covar. matrix (p45 Nimble manual)
+uppertri_mult_diag <- nimbleFunction(
+  run = function(mat = double(2), vec = double(1)) {
+    returnType(double(2))
+    p <- length(vec)
+    out <- matrix(nrow = p, ncol = p, init = FALSE)
+    for(k in 1:p)
+      out[ , k] <- mat[ , k] * vec[k]
+    return(out)
+   # turn off buildDerivs for the i index
+}, buildDerivs = list(run = list(ignore = c('k')))) 
+
+# initial values generating function
+inits <- function(){
+    list(mu_klt = c(rnorm(1, 1300, 160), 
+                  rnorm(1, 0.13, 0.06),
+                  rnorm(1, -0.5, 0.25)), 
+       mub1 = rnorm(1,0,0.01),
+       mub2 = rnorm(1,0,0.01),
+       sig_klt = c(rlnorm(1,log(110),0.1),
+                   rlnorm(1,log(0.06),0.1),
+                   rlnorm(1,log(0.25),0.1)))}
+
+data = eel.indw %>% 
+  rename(age = ageyear, 
+         length = lengthmm, 
+         sex = is.fem, 
+         emu = ser_emu_nameshort) %>%
+  filter(fi_lfs_code == "Y") %>%
+  drop_na(sex, length, emu, age) %>%
+  mutate(emu = as.integer(factor(emu)))
+
+npars <- 3
+nsu <- length(unique(data$emu)) #34
+
+# build model
+vbgf1b.model <- nimbleModel(e.vbgf1b.code,
+                        constants = list(npars=npars, 
+                                         nsu = nsu, 
+                                         nobs = nrow(data), 
+                                         emu = data$emu),
+                        inits=inits(),
+                        data = data %>% select(age,length,sex),
+                        buildDerivs = TRUE)
+  
+```
+
+
+```{r}
+# compile model
+e.vbgf1b.c <- compileNimble(vbgf1b.model)
+
+# configure hmc
+e.vbgf1b.conf <- configureHMC(e.vbgf1b.c, monitors =  c("klt"))#, enableWAIC = TRUE)
+
+# build mcmc
+e.vbgf1b.mcmc <- buildMCMC(e.vbgf1b.conf)
+
+# compile mcmc and specify the project model
+e.vbgf1b.mcmc.c <- compileNimble(e.vbgf1b.mcmc)
+```
+
+#### Samples
+
+```{r samples}
+# Samples
+e.vbgf1b.samp <- runMCMC(e.vbgf1b.mcmc.c, nchains = 2, niter = 10000, nburnin = 5000, samplesAsCodaMCMC = TRUE)#, WAIC=TRUE)
+```
+
+```{r}
+summary(e.vbgf1b.samp)
+mcmc_trace(e.vbgf1b.samp)
+effectiveSize(e.vbgf1b.samp)
+
+e.vbgf1b.samp %>%
+  autocorr.diag(lags = seq(0,1000,5)) %>%
+  as_tibble(rownames = "lag") %>%
+  pivot_longer(cols = contains("klt"), names_to = "node" , values_to = "corr") %>%
+  mutate(lag = as.numeric(str_extract(lag, "\\d+"))) %>%
+  ggplot() +
+  geom_bar(aes(x = lag, y = corr), stat = "identity") +
+  facet_wrap(~node) +
+  theme_light() +
+
+e.vbgf1b.samp %>%
+  autocorr.diag(lags = seq(0,1000,5)) %>%
+  as_tibble(rownames = "lag") %>%
+  # drop the 0 valued Ustar variables (NaN corrs)
+  select_if(~!any(is.na(.))) %>%
+  pivot_longer(cols = c(!contains("klt"), -lag), names_to = "node" , values_to = "corr") %>%
+  mutate(#node = str_replace_all(node, c("\\[" = "", "\\]"="", "," = "_", " "="")),
+          lag = as.numeric(str_extract(lag, "\\d+"))) %>%
+  ggplot() +
+  geom_bar(aes(x = lag, y = corr), stat = "identity") +
+  facet_wrap(~node) +
+  theme_light() 
+
+```
+## Simulate 1b to find out why things were not right
+
+```{r}
+# vbgf1b.sim <- nimbleModel(e.vbgf1b.code,
+#                         constants = list(npars=npars, 
+#                                          nsu = nsu, 
+#                                          nobs = nrow(data), 
+#                                          emu = data$emu),
+#                         #inits=inits(),
+#                         #data = data %>% select(age,sex)
+#                         )
+# vbgf1b.sim$initializeInfo()
+# vbgf1b.sim$calculate('mub1') # NA as these are not calculated in nimble model
+# vbgf1b.sim$getDependencies(c("sigma"))
+# nodes <- vbgf1b.sim$getDependencies(c("sigma"),self = F, downstream = T)
+# nodes
+# vbgf1b.sim$simulate(nodes) # NAs
+# vbgf1b.sim$simulate("b1") # NAs
+# vbgf1b.sim.c$sig_klt
+# vbgf1b.sim.c$mu_klt
+# vbgf1b.sim.c$mub1
+# vbgf1b.sim.c$mub2
+# rnorm(10,vbgf1b.sim.c$mub1,vbgf1b.sim.c$sb1)
+# vbgf1b.sim.c$sb2
+# vbgf1b.sim.c$b1
+# vbgf1b.sim.c$b2
+# vbgf1b.sim.c$klt
+# vbgf1b.sim$klt
+# 
+# vbgf1b.sim.conf <- configureMCMC(vbgf1b.sim.c, print=TRUE, useConjugacy = FALSE, monitors =  c("length","b1","klt"))
+# # build mcmc
+# vbgf1b.sim.mcmc <- buildMCMC(vbgf1b.sim.conf)
+# # compile mcmc and specify the project model
+# vbgf1b.sim.mcmc.c <- compileNimble(vbgf1b.sim.mcmc)
+# # sample mode
+# 
+# vbgf1b.sim.samp <- runMCMC(vbgf1b.sim.mcmc.c, nchains = 1, niter = 5000, nburnin = 4000, thin=2, samplesAsCodaMCMC = TRUE)
+# 
+# vbgf1b.sim.samp %>%
+#   as_tibble() %>%
+#   select(contains("length")) %>%
+#   pivot_longer(cols = everything(), names_to = "i", values_to = "val") %>%
+#   filter(!is.infinite(val)) %>%
+#   summary(val)
+```
+

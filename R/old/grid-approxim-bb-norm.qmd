@@ -1,0 +1,212 @@
+---
+title: "Grid approx." 
+author: "Viktor Thunell" 
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+format: 
+  html:
+    page-layout: full
+    embed-resources: true
+knitr: 
+  opts_chunk:
+    fig.align: center
+    out-width: 80%
+editor: source
+execute: 
+  echo: false
+  eval: true
+  cache: true
+---
+
+## Load libraries
+```{r libs}
+#| message: false
+#| warning: false
+#| cache: false
+
+# Load libraries, install if needed
+pkgs <- c("tidyverse", "tidylog", "devtools","viridis","nls.multstart", "broom", "patchwork", "rjags", "coda", "boot", "tidybayes","bayesplot")
+
+if(length(setdiff(pkgs,rownames(installed.packages()))) > 0){
+    install.packages(setdiff(pkgs, rownames(installed.packages())), dependencies = T)
+  }
+
+invisible(lapply(pkgs, library, character.only = T))
+
+options(ggplot2.continuous.colour = "viridis")
+theme_set(theme_light()) # check why global theme option not working when rendering
+# Set path
+
+home <- here::here()
+```
+
+## Read data
+```{r}
+#| message: false
+#| warning: false
+#| cache: false
+
+sallaa <- readRDS(file = paste0(home,"/data/data-for-4-1/salmon-laa_2025-03-07.RData"))
+  
+# numer of females and males 
+sallaa %>% 
+  ggplot() +
+  geom_bar(aes(x = sex))
+
+# hists of sea age and length
+sallaa %>% 
+  ggplot() +
+  geom_histogram(aes(x = age.sea)) +
+
+sallaa %>% 
+  ggplot() +
+  geom_histogram(aes(x = length)) +
+  
+sallaa %>% 
+  ggplot() +
+  geom_histogram(aes(x = length)) +
+  facet_wrap(~age.sea, scales = "free")
+```
+
+## Grid posterior approximation
+For the beta-binomial model, the posterior is the probability of being female p (the same as the proportion females) in a sample with f females out of N individuals.
+
+The bayes theorem formulation of the posterior is:
+
+$$P(p|f,N) = \frac{P(f,N|p)P(p)}{P(f,N)}$$
+The prior is then a probability (zero to one) and then we use the beta distribution. 
+
+Using grid approximation for to approximate the posterior, I need to specify the grid (a discretisation of the  probability distribution that is the posterior) with the entries being the probabilities at which we estimate density. I need the prior which constrains the likelihood and this is beta. The density is estimated with the likelihood, by the prior and normalized by the probability of the data (sum of the likelihoods probabilities)
+
+```{r}
+# one parameter
+f <- sallaa %>%
+  filter(sex %in% c("f","m")) %>%
+  count(sex) %>%
+  filter(sex == "f") %>% pull(n) 
+  
+N = sallaa %>%
+  filter(sex %in% c("f","m")) %>%
+  count() %>% pull(n)  
+
+# prior <- dbeta(p_grid,1,1) #this will not constrain anything
+# say that I've seen 10 salmon prior to this data and 6 were females --> alpha = 6, beta = 4.
+p_grid1 <- seq(0, 1, length.out = 5000)
+prior1 <- dbeta(p_grid1,6,4)
+
+like1 <- dbinom(f, N, prob = p_grid1)
+post1 <- like1*prior1 / sum(like1*prior1)
+
+plot(p_grid1, post1, type = "l")
+lines(p_grid1, prior1/sum(prior1), type = "l", col = "red")
+
+# one parameter - multiple values
+spatial <- sallaa %>%
+  filter(sex %in% c("f","m")) %>%
+  count(sex, spat.agg) %>%
+  filter(sex == "f") %>%
+  distinct(spat.agg)
+
+f2 <- sallaa %>%
+  filter(sex %in% c("f","m")) %>%
+  count(sex, spat.agg) %>%
+  filter(sex == "f") %>% pull(n) 
+
+N2 <- sallaa %>%
+  filter(spat.agg %in% spatial$spat.agg) %>%
+  filter(sex %in% c("f","m")) %>%
+  count(spat.agg) %>% pull(n)  
+
+prior2 <- rep(post1, each = length(f2))
+
+p_grid2 <- matrix(nrow = length(f2), ncol = 5000, byrow = TRUE, seq(0, 1, length.out = 5000))
+
+like2 <- dbinom(f2, N2, prob = p_grid2)
+
+post2 <- like2*rep(post1, each = length(f2))#prior2# / sum(like2*prior2)
+post2b <- like2*rep(prior1, each = length(f2))
+
+# with strong informative prior
+cbind(p_grid2[1,],t(post2b)) %>%
+  as_tibble() %>%
+  pivot_longer(cols = 2:12, names_to = "point", values_to = "prod") %>%
+  ggplot() +
+  geom_line(aes(x = V1, y = prod, color = point ) ) +
+
+# with vague prior
+cbind(p_grid2[1,],t(post2)) %>%
+  as_tibble() %>%
+  pivot_longer(cols = 2:12, names_to = "point", values_to = "prod") %>%
+  ggplot() +
+  geom_line(aes(x = V1, y = prod, color = point ) ) +
+  lims(x = c(0.5,0.6))
+
+
+```
+
+# A normal length model
+
+"When you have more than one parameter then it’s a case of multiplying the priors pdfs for different parameters together for each combination of parameters (same with likelihood, often becomes more convenient to work in log space and sum)." 
+
+$$Y_i~ \sim Normal(\mu, \sigma)$$
+$$mu~ \sim Normal(0, 0.001)$$
+
+$$\sigma \sim uniform(0,1)$$
+
+
+```{r}
+#one variable, mu
+p.grid <- seq(500, 900, length.out = 1000)
+prior.mu <- dnorm(p.grid, mean = 700, sd = 100)
+length.age2 <- sallaa %>% pull(length) 
+ll <- dnorm(p.grid, mean = mean(length.age2), sd = sd(length.age2)) 
+prod <- ll*prior.mu
+plot(p.grid, prod, type = "l")
+
+# two variables, mu and sd
+p.grid <- expand.grid(mu = seq(500, 900, length.out = 100), 
+                      sd = seq(10, 170, length.out = 100))
+
+prior.mu <- dnorm(p.grid$mu, mean = 700, sd = 100)
+prior.sd <- dunif(p.grid$sd, 10, 170)
+
+length.age2 <- sallaa %>% pull(length)
+
+post <- p.grid %>%
+  rowwise() %>%
+  mutate( ll = sum(dnorm(length.age2, mu, sd))) %>%
+  # un-rowwise
+  ungroup()
+
+# McElreaths version
+# LL <- sapply( 1:nrow(p.grid) , function(i)
+# sum( dnorm( length.age2, mean=p.grid$mu[i] , sd=p.grid$sd[i])))
+# #...works lke mine:
+# sum(LL == pull(post, ll))
+post$prod <- post$ll*prior.mu*prior.sd
+
+post %>%
+  ggplot() +
+  geom_raster(aes(mu, sd, fill = prod)) +
+  scale_fill_viridis()
+
+post$prob <- post$ll*prior.mu*prior.sd/sum(post$ll*prior.mu*prior.sd)
+
+# conditional prob distributions
+post %>%
+  filter(between(sd, 100,101)) %>%
+  ggplot() +
+  geom_line(aes(mu,prob)) +
+post %>%
+  filter(between(mu, 700,705)) %>%
+  ggplot() +
+  geom_line(aes(sd,prob))
+# The sd probs are left skewed distribution. Is this why gamma is used as a prior for sd?
+
+post %>% slice_sample(n = 1000000, replace = TRUE, weight_by = prob) %>%
+  ggplot() +
+  geom_density(aes(x = mu)) +
+post %>% slice_sample(n = 1000000, replace = TRUE, weight_by = prob) %>%
+  ggplot() +
+  geom_density(aes(x = sd)) 
+
+```
