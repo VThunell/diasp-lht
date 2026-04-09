@@ -8,6 +8,7 @@ format:
     code-summary: "Show code"
     page-layout: full
     embed-resources: true
+    toc: true
 knitr: 
   opts_chunk:
     fig.align: center
@@ -24,7 +25,7 @@ execute:
 DIASPARA will make recommendations to enhance the DCF and Regional Workplans. DIASPARA aims to better align data needs and data collection, as such, it will contribute to the objectives of the DCF and the CFP, and will also bring valuable insights for the future Regional Workplans.
 
 As part of this work, Workpackage 2 will create an inventory of available and potentially available data on Atlantic salmon
-and European eel LHTs (T2.1.1) and identify gaps in the current DCF and make recommendations for improvements in data collection based on assessment model needs identified in WP4 (T2.1.2)
+and European eel LHTs (T2.1.1) and identify gaps in the current DCF and make recommendations for improvements in data collection based on assessment model needs.
 
 This script summarizes information in the DCF Annual reports on collected data for diadromous species.
 
@@ -117,6 +118,7 @@ filepaths <- list.files(path, full.names=TRUE)
 ### Import from new table format, i.e. post 2022
 
 #### Table 2.2. Planning of sampling for biological variables
+
 ```{r}
 #| output: false
 
@@ -141,6 +143,7 @@ diadrom.DCF.22 <- DCF.tables.22 %>%
   list_rbind()
 
 ```
+
 #### Table 2.3. Diadromous species data collection in freshwater
 
 ```{r}
@@ -284,7 +287,7 @@ diadrom.DCF.22 %>%
   scale_fill_viridis() +
   theme(axis.text.x = element_text(angle = 90),
         axis.text = element_text(size=6)) +
-  labs(title = "Achieved number of individuals measured at national level", subtitle = "Table 2.2. & 1C - biological variables")
+  labs(title = "Achieved number of individuals sampled at national level", subtitle = "Table 2.2. & 1C - biological variables")
 ```
 
 ### Plot sheets 2.3 and 1E
@@ -342,6 +345,15 @@ diadrom.DCF.23.clean <- diadrom.DCF.23 %>%
   drop_na(life.stage)
 
 diadrom.DCF.23.clean %>%
+  ggplot() +
+  geom_tile(aes(year, country, fill = ach.n.unit.num)) +
+  facet_grid(~Species) +
+  scale_fill_viridis() +
+  theme(axis.text.x = element_text(angle = 90),
+        axis.text = element_text(size=6)) +
+    labs(title = "Achieved number of units measured at national level", subtitle = "Table 2.3. & 1E  - Diadromous")
+
+diadrom.DCF.23.clean %>%
   filter(Species == "Anguilla anguilla") %>%
   ggplot() +
   geom_tile(aes(year, country, fill = ach.n.unit.num)) +
@@ -349,7 +361,7 @@ diadrom.DCF.23.clean %>%
   scale_fill_viridis() +
   theme(axis.text.x = element_text(angle = 90),
         axis.text = element_text(size=6)) +
-    labs(title = "Eel achieved number of individuals measured at national level", subtitle = "Table 2.3. & 1E  - Diadromous")
+    labs(title = "Eel achieved number of units measured at national level", subtitle = "Table 2.3. & 1E  - Diadromous")
 
 # Salmon
 diadrom.DCF.23.clean %>%
@@ -360,7 +372,7 @@ diadrom.DCF.23.clean %>%
   scale_fill_viridis() +
   theme(axis.text.x = element_text(angle = 90),
         axis.text = element_text(size=6)) +
-    labs(title = "Salmon achieved number of individuals measured at national level", subtitle = "Table 2.3. & 1E  - Diadromous")
+    labs(title = "Salmon achieved number of units measured at national level", subtitle = "Table 2.3. & 1E  - Diadromous")
 
 diadrom.DCF.23.clean %>%
   filter(life.stage %in% c("yellow", "silver", "glass", "yellow_silver")) %>%
@@ -370,6 +382,6 @@ diadrom.DCF.23.clean %>%
   scale_fill_viridis() +
   theme(axis.text.x = element_text(angle = 90),
         axis.text = element_text(size=6)) +
-    labs(title = "Eel achieved number of individuals measured at national level", subtitle = "Table 2.3. & 1E  - Diadromous")
+    labs(title = "Eel achieved number of units measured at national level", subtitle = "Table 2.3. & 1E  - Diadromous")
 ```
 

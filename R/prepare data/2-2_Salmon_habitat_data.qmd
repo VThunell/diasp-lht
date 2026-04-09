@@ -26,7 +26,7 @@ execute:
 #| warning: false
 
 # Load libraries, install if needed
-pkgs <- c("tidyverse","tidylog","viridis","duckdb","arrow","sf")
+pkgs <- c("tidyverse","tidylog","viridis","arrow","sf")
 
 if(length(setdiff(pkgs,rownames(installed.packages()))) > 0){
   
@@ -47,63 +47,41 @@ home <- here::here()
 ## Read data
 
 ```{r}
-#| message: false
-#| warning: false
-#| cache: false
-
-sallaa <- readRDS(file = paste0(home,"/data/data-for-2-2/salmon-laa_2025-09-08.RData")) %>%
-  rename(year = fi_year,
-         site = sai_location,
-         sea.age = sea_age_year,
-         juv.age = juvenile_age_year,
-         tot.age = tot_age_year,
-         lat = fisa_y_4326,
-         lon = fisa_x_4326) %>%
-  #filter out non-aged individuals (~90000 individuals)
-  filter(!(is.na(sea.age) & is.na(juv.age))) %>%
-  filter(!is.na(juv.age),
-         !is.na(year),
-         year > 2000)
-
-df <- sallaa #%>%
-  #slice_sample(n = 100)
+# #| message: false
+# #| warning: false
+# #| cache: false
+# 
+# sallaa <- readRDS(file = paste0(home,"/data/data-for-2-2/salmon-laa_2026-03-09.RData")) %>%
+#   rename(year = fi_year,
+#          site = sai_location,
+#          sea.age = sea_age_year,
+#          juv.age = juvenile_age_year,
+#          tot.age = tot_age_year,
+#          lat = fisa_y_4326,
+#          lon = fisa_x_4326) %>%
+#   #filter out non-aged individuals (~90000 individuals)
+#   filter(!(is.na(sea.age) & is.na(juv.age))) %>%
+#   filter(!is.na(juv.age),
+#          !is.na(year),
+#          year > 2000)
+# 
+# df <- sallaa %>%
+#   slice_sample(n = 100)
 ```
 
 ```{r}
-rs <- open_dataset("/Users/vitl0001/Documents/Projects/DIASPARA/Habitat_db/riversegments/", format = "parquet")
+# rs <- open_dataset("/Users/vitl0001/Documents/Projects/DIASPARA/Habitat_db/riversegments/", format = "parquet")
 
 ca <- open_dataset("/Users/vitl0001/Documents/Projects/DIASPARA/Habitat_db/catchments/", format = "parquet")
 
-schema(ca)
-
-ca %>%
-  select(shape) %>%
-  collect()
+# schema(ca)
+# 
+# ca %>%
+#   select(shape) %>%
+#   collect()
 ```
 
-# refbast
-```{r}
-refbast <- open_dataset("/Users/vitl0001/Documents/Projects/DIASPARA/Habitat_db/refbast/", format = "parquet")
-schema(refbast)
 
-df.refbast <- refbast %>%
-  collect()
-
-
-class(df.refbast$geom_line) # not compatible with sf 
-#"As for geom_line, it is a known issue with parquet files. When converting the data from psql to parquet I can only register one column as a geometry, hence the other one being a chr. I’ll add a second file where geom_line is the main geometry later on so you’ll be able to merge both files and have geom_polygon and geom_line working." /Jules
-
-df.refbast.sf <- df.refbast %>%
-  drop_na(geom_polygon) %>%
-  mutate(geometry = st_as_sfc(geom_polygon, EWKB = TRUE, crs = 4326)) %>%
-  st_as_sf(sf_column_name = "geometry") 
-
-ggplot() +
-  geom_sf(data = df.refbast.sf %>% filter(are_lev_code == "Assessment unit"))
-
-plot_map_Euro +
-  geom_sf(data = df.refbast.sf)
-```
 # plot catchm. shapes
 ```{r}
 ca_sf <- ca %>%
@@ -112,21 +90,44 @@ ca_sf <- ca %>%
   mutate(geometry = st_as_sfc(shape, EWKB = TRUE, crs = 4326)) %>%
   st_as_sf(sf_column_name = "geometry")
 
-ca_sf %>%
-  ggplot() +
-  geom_sf()
+# ca_sf %>%
+#   ggplot() +
+#   geom_sf()
 ```
 # plot riverseg. shapes
 ```{r}
-rs.sf <- rs %>%
-  #slice_head(n = 10000) %>%
-  collect() %>%
-  mutate(geometry = st_as_sfc(geom, EWKB = TRUE, crs = 4326)) %>%
-  st_as_sf(sf_column_name = "geometry")
+# rs_sf <- rs %>%
+#   #slice_head(n = 10000) %>%
+#   collect() %>%
+#   mutate(geometry = st_as_sfc(geom, EWKB = TRUE, crs = 4326)) %>%
+#   st_as_sf(sf_column_name = "geometry")
+# 
+# rs_sf %>%
+#   ggplot() +
+#   geom_sf()
+```
+# open wgnas refs
+```{r}
+rn <- open_dataset("/Users/vitl0001/Documents/Projects/DIASPARA/Habitat_db/refnas/refnas_tr_area_are_polygon.parquet", format = "parquet")
 
-rs.sf %>%
-  ggplot() +
-  geom_sf()
+rn_df <- rn %>% collect()
+
+# NULL list elements in the polygons
+rn_df %>%
+  filter(map_lgl(geom_polygon, is.null))
+
+rn_sf <- rn_df %>% 
+  filter(!map_lgl(geom_polygon, is.null)) %>%
+  mutate(geom = st_as_sfc(geom_polygon, EWKB = TRUE, crs = 4326)) %>%
+  st_as_sf(sf_column_name = "geom")
+
+rn_sf %>%
+  #filter(are_lev_code == "River") %>%
+  distinct(are_lev_code)
+
+plot_map_Euro +
+  geom_sf(data = rn_sf %>% filter(
+              are_lev_code %in% c("Assessment_unit")), aes(fill=are_lev_code), alpha = 0.5)
 ```
 
 ```{r}
@@ -212,4 +213,147 @@ plot_map_Nord +
 
 ```
 
-df
+
+## Build spatiotemporal temperature data
+
+```{r}
+# For using the modelled E-Hype data
+# library(ncdf4) # tidync not working on the hype netcdf (cant find the catchment id:s). Note this is only one year. 
+# nc <- nc_open("/Users/vitl0001/Documents/Projects/DIASPARA/Incoming data/wtemp_ymonmean_abs_E-HYPEcatch05-EUR-11_ICHEC-EC-EARTHcatch_v1/wtemp_ymonmean_abs_E-HYPEcatch01-EUR-11_ICHEC-EC-EARTH_historical_r12i1p1_CLMcom-CCLM4-8-17-v1_na_1971-2000_catch_v1.nc")
+# 
+# ds   <- ncvar_get(nc, "id")   
+# times <- ncvar_get(nc, "time") 
+# temps <- ncvar_get(nc, "wtemp_ymonmean")
+# 
+# nc_close(nc)
+# 
+# df_tidy <- expand_grid(id = ids, time_raw = times) %>%
+#   mutate(
+#     wtemp = as.vector(temps), # This unrolls the matrix to match the grid
+#     date = as.Date("1971-01-01") + time_raw 
+#   )
+# 
+# # Shape files for catchments
+# catchments_sf <- st_read("/Users/vitl0001/Documents/Projects/DIASPARA/Incoming data/EHYPE3_subbasins")
+# 
+# glimpse(catchments_sf)
+# 
+# cthtemp <- catchments_sf %>%
+#   inner_join(df_tidy, join_by(SUBID == id))
+# 
+# cthtemp %>%
+#   filter(date == "1971-01-01") %>%
+#   ggplot() +
+#   geom_sf(aes(fill = wtemp, color = NA)) +
+#   scale_fill_viridis_c()
+
+
+# For the gridded landsat 5 data
+library(tidync,tidyterra)
+dft <- tidync("/Users/vitl0001/Documents/Projects/DIASPARA/Incoming data/data_stream-moda.nc") %>%
+  hyper_tibble()
+
+dft_m <- dft %>%
+  select(-lblt) %>%
+  mutate(year = as.numeric(str_sub(valid_time,start = 1, end = 4))) %>%
+  mutate(across(c(longitude, latitude), ~ as.numeric(.))) %>%
+  summarise(mean_temp = mean(lmlt) -273.15, .by = c(longitude, latitude, year))
+
+dft_m %>%
+  filter(year %in% c(1975,1995,2015,2025)) %>%
+  ggplot() +
+  geom_raster(aes(x = longitude, y = latitude, fill = mean_temp)) +
+  facet_wrap(~year) +
+  theme_minimal() +
+  scale_fill_viridis_c()
+
+# dft_rast <- dft_m %>%
+#   pivot_wider(names_from = year, values_from = mean_temp) %>%
+#   tidyterra::as_spatraster(crs = "EPSG:4326")
+# 
+# d_ca_sf <- ca_sf %>%
+#   select(1:14)
+# # extract temperature to ca_sf fr
+# ca_amtemp <- terra::extract(dft_rast, d_ca_sf, fun = mean, na.rm = TRUE, ID = TRUE)
+# ca_amtemp <- ca_amtemp[complete.cases(ca_amtemp), ] %>%
+#   left_join(d_ca_sf %>% mutate(ID = row_number()), by = "ID") %>%
+#   st_as_sf()
+#   
+# mb_amtemp <- ca_amtemp %>%
+#   #slice_head(n = 1000) %>%
+#   pivot_longer(
+#     cols = matches("^\\d{4}$"), # columns that are exactly 4 digits
+#     names_to = "year",
+#     values_to = "temp"
+#   ) %>%
+#   group_by(main_bas, year) %>%
+#   summarise(mb_temp = mean(temp), .groups = "drop")
+
+plot_map_Euro +
+  geom_sf(data = mb_amtemp %>% filter(year %in% c(1975,2025)), 
+          aes(fill = mb_temp), color = NA) +
+    scale_fill_viridis_c(name = "Temp (°C)") +
+  facet_wrap(~year)
+
+```
+
+## Join in temperature data 
+```{r}
+sallaa.sf <- st_as_sf(sallaa %>% drop_na(lat,lon), coords = c("lon", "lat"), crs = 4326)
+ st_crs(sallaa.sf)
+# st_crs(ca.amtemp)
+
+salf.sf_t <- sallaa.sf %>%
+  filter(age.type == "juve.only") %>%
+  # ggplot() +
+  # geom_sf()
+  st_join(mb_amtemp, join = st_within, left = TRUE) %>% 
+  filter(year.x == year.y) 
+
+plot_map_Euro +
+  geom_sf(data = salf.sf_t, aes(color = mb_temp))
+  
+salf.sf_t %>%
+  ggplot(aes(x=mb_temp,y=length_mm, group = factor(tot.age))) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  facet_wrap(~tot.age)
+```
+
+# refbast
+```{r}
+
+# I am using a database on spatai characteristics (shape files) based on parquet files with a directory structure with a main directory with  three different spatial featrues and shapefile in three subdirectories. each feature subdirectory has regional subdirectories. I am using the arrow-package and R-studio to retain information from the shapefiles to my data based on nearest neighbour spatial joins. How can i use 
+
+
+refbast <- open_dataset("/Users/vitl0001/Documents/Projects/DIASPARA/Habitat_db/refbast/refbast_tr_area_are_polygon.parquet", format = "parquet")
+refbast <- open_dataset("/Users/vitl0001/Documents/Projects/DIASPARA/Habitat_db/refbast/refbast_landings_wbast_river_names.parquet", format = "parquet")
+
+refbast %>%
+  collect() %>%
+  select(are_code,are_lev_code,are_wkg_code,are_name) %>% collect()
+
+class(rb.df$geom_line) # not compatible with sf 
+#"As for geom_line, it is a known issue with parquet files. When converting the data from psql to parquet I can only register one column as a geometry, hence the other one being a chr. I’ll add a second file where geom_line is the main geometry later on so you’ll be able to merge both files and have geom_polygon and geom_line working." /Jules
+
+rb.df.sf <- rb.df %>%
+  drop_na(geom_polygon) %>%
+  mutate(geometry = st_as_sfc(geom_polygon, EWKB = TRUE, crs = 4326)) %>%
+  st_as_sf(sf_column_name = "geometry") 
+
+rb.df.sf %>% filter(are_lev_code == "River") %>%
+  ditinct(are_name)
+
+ggplot() +
+  geom_sf(data = rb.df.sf %>% filter(are_lev_code == "River"))
+
+
+plot_map_Euro +
+  geom_sf(data = rb.df.sf %>% filter(are_lev_code == "River"))
+
+sal.df <- readRDS(file = paste0(home,"/data/data-for-2-2/salmon-laa_2025-12-21.RData")) 
+
+sal.df %>% 
+  geom_sf(data = rb.df.sf %>% filter(are_lev_code == "River"))
+  
+```

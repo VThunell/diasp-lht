@@ -12,6 +12,9 @@
 # Example code in package build process
 *-Ex.R
 
+# .DS store files
+.DS_Store
+
 # Output files from R CMD build
 /*.tar.gz
 
@@ -35,6 +38,9 @@ vignettes/*.pdf
 # Temporary files created by R markdown
 *.utf8.md
 *.knit.md
+
+# Files created by R markdown
+*_files/
 
 # R Environment Variables
 .Renviron
