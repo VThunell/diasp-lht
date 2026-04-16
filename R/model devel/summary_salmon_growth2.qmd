@@ -28,7 +28,7 @@ execute:
 #| cache: false
 
 # Load libraries, install if needed
-pkgs <- c("tidyverse", "tidylog", "devtools","viridis","nls.multstart", "broom", "patchwork", "coda", "boot", "tidybayes","bayesplot", "nimbleHMC", "here", "purrr","posterior")
+pkgs <- c("tidyverse", "tidylog", "devtools","viridis","nls.multstart", "broom", "patchwork", "posterior", "boot", "tidybayes","bayesplot", "nimbleHMC", "here", "purrr")
 
 # remotes::install_github("nimble-dev/nimble", ref = "devel", subdir = "packages/nimble")
 
@@ -141,7 +141,9 @@ data.biph %>%
 
 # juvenile size at age
 data.biph %>%
-  filter(age.type == "juve.only") %>%
+  filter(age.type == "juve.only",
+         #spat.unit == "Brittany"
+         ) %>%
   ggplot(aes(x = juv.age, y =length_mm)) +
   geom_point(alpha = 0.3) +
   geom_smooth(method = lm) +
@@ -160,14 +162,15 @@ data.biph %>%
 
 ### Source models / Load samples
 ```{r}
-laa.samples <- readRDS("/Users/vitl0001/gitProjects/diasp-lht/data/biph1_1_samples_2026-04-02.RData")$samples %>%
-  as_draws()
-
+laa.samplesWAIC <- readRDS("/Users/vitl0001/gitProjects/diasp-lht/data/biph1_1_2_samples_2026-04-14.RData")
 # biph1_0.samples$WAIC # 312954.1 10/3
 # biph1_0.samples_test$WAIC # 312911.5 10/3
-laa.samples$WAIC # 312954.1 10/3
-laa.samples$WAIC # 675015.2 2/4
-laa.samples <- biph1_1.samples$samples
+#laa.samples$WAIC # 312954.1 10/3
+#laa.samples$WAIC # 675015.2 2/4
+laa.samplesWAIC$WAIC # 667375.3 14/4
+
+laa.samples <- laa.samplesWAIC$samples %>%
+  as_draws()
 
 # # Or source model code and mcmc (load libs and data)
 # t <- Sys.time()
@@ -185,36 +188,107 @@ laa.samples <- biph1_1.samples$samples
 ```
 # testing posterior package
 
-### Traces and ‘potential scale reduction factor’
+### Traces, rhats and ees
 
 ```{r}
-node.sub <- subset_draws(laa.samples, variable = "sig_l")
+node.sub <- subset_draws(as_draws(laa.samples), variable = "sig_l")
 node.sub %>% mcmc_trace()
-summarise_draws(node.sub, median, rhat, ess_bulk, ess_tail)
+node.sub %>% summarise_draws(c("mean","median","sd","rhat","ess_bulk","ess_tail"))
 
-node.sub <- subset_draws(laa.samples, variable = "par_f")
+node.sub <- subset_draws(as_draws(laa.samples), variable = c("l_mean_m_bs", "k_mean_m_bs"))
 node.sub %>% mcmc_trace()
-summarise_draws(node.sub, median, rhat, ess_bulk, ess_tail)
+node.sub %>% summarise_draws(c("mean","median","sd","rhat","ess_bulk","ess_tail"))
 
-node.sub <- subset_draws(laa.samples, variable = "par_m")
+# su 1, 14 and 8 are odd (Adour, upper Normandy and Brittany)
+data.biph %>% distinct(spat.unit,su)
+node.sub <- subset_draws(as_draws(laa.samples), variable = "par_f")
+node.sub %>% mcmc_trace()
+node.sub %>% summarise_draws(c("mean","median","sd","rhat","ess_bulk","ess_tail")) %>% mutate(mean_n = exp(mean))
+
+node.sub <- subset_draws(as_draws(laa.samples), variable = "par_m")
 node.sub[,sample(1:ncol(node.sub), 36)] %>% mcmc_trace()
-summarise_draws(node.sub, median, rhat, ess_bulk, ess_tail) %>%
-  arrange(-rhat)
+node.sub %>% summarise_draws(c("mean","median","sd","rhat","ess_bulk","ess_tail")) %>% mutate(mean_n = exp(mean))
 
-node.sub <- subset_draws(laa.samples, variable = "sig_par_m")
+node.sub <- subset_draws(as_draws(laa.samples), variable = "sig_par_f")
 node.sub %>% mcmc_trace()
-summarise_draws(node.sub, median, rhat, ess_bulk, ess_tail) %>%
-  arrange(-rhat)
+node.sub %>% summarise_draws(c("mean","median","sd","rhat","ess_bulk","ess_tail")) %>% mutate(mean_n = exp(mean))
 
-node.sub <- subset_draws(laa.samples, variable = "lb_mu")
+node.sub <- subset_draws(as_draws(laa.samples), variable = "sig_par_m")
 node.sub %>% mcmc_trace()
-summarise_draws(node.sub, median, rhat, ess_bulk, ess_tail) %>%
-  arrange(-rhat)
+node.sub %>% summarise_draws(c("mean","median","sd","rhat","ess_bulk","ess_tail")) %>% mutate(mean_n = exp(mean))
 
-node.sub <- subset_draws(as_draws(laa.samples), variable = "corY")
+# su 14 and 8 are odd
+node.sub <- subset_draws(as_draws(laa.samples), variable = "lb_mu")
 node.sub %>% mcmc_trace()
-summarise_draws(node.sub, median, rhat, ess_bulk, ess_tail) 
+node.sub %>% summarise_draws(c("mean","median","sd","rhat","ess_bulk","ess_tail")) %>% mutate(mean_n = exp(mean))
 
+node.sub <- subset_draws(as_draws(laa.samples), variable = "R")
+node.sub[,sample(1:ncol(node.sub), 36)] %>% mcmc_trace()
+node.sub %>% summarise_draws(c("mean","median","sd","rhat","ess_bulk","ess_tail")) %>% mutate(mean_n = exp(mean))
+
+```
+# Density of pars
+```{r}
+node.sub <- subset_draws(as_draws(laa.samples), variable = c("l_mean_m_bs", "k_mean_m_bs"))
+node.sub %>%
+  gather_draws(l_mean_m_bs[r], k_mean_m_bs[r]) %>%
+  ggplot() +
+  geom_density(aes(.value, color = factor(r))) +
+  facet_wrap(~.variable)
+
+node.sub <- subset_draws(as_draws(laa.samples), variable = c("lb_mu"))
+node.sub %>%
+  gather_draws(lb_mu[su]) %>%
+  left_join(data.biph %>% distinct(su, spat.unit)) %>%
+  ggplot() +
+  geom_density(aes(.value, color = factor(spat.unit))) 
+
+node.sub <- subset_draws(as_draws(laa.samples), variable = "par_f")
+node.sub %>%
+  spread_draws(par_f[su,par], sep = ",") %>%
+  left_join(data.biph %>% distinct(su, spat.unit)) %>%
+  mutate(par_f = exp(par_f)) %>%
+  filter(par == 1,
+         #spat.unit == "Brittany"
+         ) %>%
+  ggplot() +
+  geom_density(aes(par_f, color = factor(spat.unit))) +
+  xlim(0,2000)
+  #facet_wrap(~factor(spat.unit), scales = "free") 
+
+node.sub %>%
+  spread_draws(par_f[su,par], sep = ",") %>%
+  left_join(data.biph %>% distinct(su, spat.unit)) %>%
+  mutate(par_f = par_f) %>%
+  filter(par == 2,
+         #spat.unit == "Brittany"
+         ) %>%
+  ggplot() +
+  geom_density(aes(par_f, color = factor(spat.unit)))  
+  facet_wrap(~factor(su), scales = "free")
+
+node.sub <- subset_draws(as_draws(laa.samples), variable = "par_m")
+a<-node.sub %>%
+  spread_draws(par_m[yr,supar], sep = ",") %>%
+  mutate(par_m = par_m,
+         su = if_else(supar < ner, supar, supar - ner),
+         par = if_else(supar < ner, 1, 2)) %>%
+  filter(par == 1) %>%
+  ggplot() +
+  geom_density(aes(par_m, color = factor(yr)), show.legend = FALSE) + 
+  facet_wrap(~factor(su), scales = "free", nrow = 2) 
+b <- node.sub %>%
+  spread_draws(par_m[yr,supar], sep = ",") %>%
+  mutate(par_m = par_m,
+         su = if_else(supar < ner, supar, supar - ner),
+         par = if_else(supar < ner, 1, 2)) %>%
+  mutate(par_m = par_m) %>%
+  filter(par == 2) %>%
+  ggplot() +
+  geom_density(aes(par_m, color = factor(yr))) + 
+  facet_wrap(~factor(su), scales = "free", nrow = 2)
+
+a / b
 ```
 
 ### Predicted / observed
@@ -268,6 +342,7 @@ data.biph %>%
 ### Predicted curves
 
 ```{r}
+
 tmp <- laa.samples %>%
   spread_draws(par_f[su,par], sep = ",") %>%
   median_qi()
@@ -367,7 +442,6 @@ laa.samples %>%
 ```
 
 ### k over time
-
 ```{r}
 tmpP <- laa.samples %>%
   gather_draws(par_m[year, supar], sep = ",") 
@@ -378,60 +452,47 @@ tmpP %>%
   mutate(su = if_else(supar > 14, supar - 14, supar),
          par = if_else(supar > 14, "k", "linf")) %>%
   left_join(data.biph %>% distinct(su, spat.unit)) %>% 
-  mutate(year = year + 2006) %>%
+  mutate(year = year + 2006) 
+
+tmpP %>%
   filter(year > 2010) %>%
   ungroup() %>%
-  #filter(par == "linf") %>%
-  #filter(par == "k") %>%
+  filter(par == "k") %>%
   ggplot() +
   geom_boxplot(aes(x = year, y = exp(.value), group = year), color = "#00BFC4", outliers = FALSE) +
-  #geom_line(aes(y = exp(m_length), x = year), color = "#00BFC4", alpha = 0.4) +
-  facet_wrap(par~spat.unit, scales = "free") + 
+#  geom_line(aes(y = exp(m_length), x = year), color = "#00BFC4", alpha = 0.4) +
+  facet_wrap(~spat.unit, scales = "free") + 
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 90,hjust = 1, size = rel(.75))) +
-  ylim(0,0.)
-  
-# tmpK %>%
-#   filter(sex == "f",
-#          !spat.unit == "Ireland_west"
-#          ) %>%
-#   ungroup() %>%
-#   ggplot() +
-#   geom_boxplot(aes(x = year, y = exp(.value), group = year), color = "#F8766D", outliers = FALSE) +
-#   geom_line(aes(y = exp(m_length), x = year), color = "#F8766D", alpha = 0.5) +
-#   facet_wrap(~spat.unit, scales = "free") + 
-#   theme_minimal() +
-#   theme(axis.text.x = element_text(angle = 90,hjust = 1, size = rel(.75))) +
-#   labs(x = "year", y = "k")
-# 
-# tmpK %>%
-#   filter(spat.unit == "Ireland_west") %>%
-#   ungroup() %>%
-#   ggplot() +
-#   geom_boxplot(aes(x = year, y = exp(.value), group = year, color = sex), outliers = FALSE) +
-#   geom_line(aes(y = exp(m_length), x = year, color = sex), alpha = 0.5) +
-#   facet_wrap(~sex, scales = "free") + 
-#   theme_minimal() +
-#   theme(axis.text.x = element_text(angle = 90,hjust = 1, size = rel(.75))) +
-#   labs(x = "year", y = "k", title = "Ireland_west w. very high k", caption = "line is global median by year and sex")
+  tmpP %>%
+  filter(year > 2010) %>%
+  ungroup() %>%
+  filter(par == "linf") %>%
+  ggplot() +
+  geom_boxplot(aes(x = year, y = exp(.value), group = year), color = "#00BFC4", outliers = FALSE) +
+#  geom_line(aes(y = exp(m_length), x = year), color = "#00BFC4", alpha = 0.4) +
+  facet_wrap(~spat.unit, scales = "free") + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90,hjust = 1, size = rel(.75)))
+
 ```
 
 ### Correlation/covariance matrix
 ```{r}
 # median sample correlation 
-samp <- laa.samples[[1]]
+samp <- laa.samples
 
 cols <- grep("^R",colnames(as.matrix(samp)))
+ner = length(unique(data.biph$spat.unit))
 
-
-corr_arr <- array(NA, dim = c(12, 12, nrow(samp)))
+corr_arr <- array(NA, dim = c(ner, ner, nrow(samp)))
 
 for (i in 1:nrow(samp)) {
 
   R_sample <- matrix(
     as.numeric(samp[i, cols]),
-    nrow = 12,
-    ncol = 12,
+    nrow = ner,
+    ncol = ner,
     byrow = FALSE
   )
 
