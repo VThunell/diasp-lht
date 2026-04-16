@@ -28,7 +28,7 @@ execute:
 #| cache: false
 
 # Load libraries, install if needed
-pkgs <- c("tidyverse", "tidylog", "devtools","viridis","nls.multstart", "broom", "patchwork", "coda", "boot", "tidybayes","bayesplot", "nimbleHMC", "here", "purrr")
+pkgs <- c("tidyverse", "tidylog", "devtools","viridis","nls.multstart", "broom", "patchwork", "coda", "boot", "tidybayes","bayesplot", "nimbleHMC", "here", "purrr","posterior")
 
 # remotes::install_github("nimble-dev/nimble", ref = "devel", subdir = "packages/nimble")
 
@@ -55,7 +55,7 @@ home <- here::here()
 #| warning: false
 #| cache: false
 
-#sallaa <- readRDS(file = paste0(home,"/data/data-for-2-2/salmon-laa_2026-01-30.RData")) %>%
+#sallaa <- readRDS(file = paste0(home,"/data/data-for-2-2/salmon-laa_2026-03-31.RData")) %>%
 sallaa <- readRDS(file = paste0(home,"/data/data-for-2-2/salmon-laa_2026-03-31.RData")) %>%
   rename(year = fi_year,
          site = sai_location,
@@ -160,7 +160,9 @@ data.biph %>%
 
 ### Source models / Load samples
 ```{r}
-laa.samples <- readRDS("/Users/vitl0001/gitProjects/diasp-lht/data/biph1_1_samples_2026-04-02.RData")$samples
+laa.samples <- readRDS("/Users/vitl0001/gitProjects/diasp-lht/data/biph1_1_samples_2026-04-02.RData")$samples %>%
+  as_draws()
+
 # biph1_0.samples$WAIC # 312954.1 10/3
 # biph1_0.samples_test$WAIC # 312911.5 10/3
 laa.samples$WAIC # 312954.1 10/3
@@ -181,89 +183,79 @@ laa.samples <- biph1_1.samples$samples
 #   geom_point() +
 #   geom_smooth(method = lm)
 ```
+# testing posterior package
 
 ### Traces and ‘potential scale reduction factor’
 
 ```{r}
-node.sub <- grep("sig_l", colnames(laa.samples), value = TRUE)
-laa.samples[, node.sub[], drop = FALSE] %>% mcmc_trace()
-laa.samples[, node.sub[], drop = FALSE] %>% gelman.diag()
-laa.samples[, node.sub[], drop = FALSE] %>%
-effectiveSize()
+node.sub <- subset_draws(laa.samples, variable = "sig_l")
+node.sub %>% mcmc_trace()
+summarise_draws(node.sub, median, rhat, ess_bulk, ess_tail)
 
-node.sub <- grep("^par_f\\[", colnames(laa.samples), value = TRUE)
-laa.samples[, node.sub[], drop = FALSE] %>% mcmc_trace()
-laa.samples[, node.sub[], drop = FALSE] %>% gelman.diag()
-print("effective sample size")
-laa.samples[, node.sub[], drop = FALSE] %>% effectiveSize()
+node.sub <- subset_draws(laa.samples, variable = "par_f")
+node.sub %>% mcmc_trace()
+summarise_draws(node.sub, median, rhat, ess_bulk, ess_tail)
 
-node.sub <- grep("^par_m\\[", colnames(laa.samples), value = TRUE)
-laa.samples[, node.sub[sample(1:length(node.sub), 36)], drop = FALSE] %>% mcmc_trace()
-pl <- laa.samples[, node.sub[], drop = FALSE] %>% gelman.diag()
-pl$psrf[  which(pl$psrf[, 1] > 1.1),] 
-pl <- laa.samples[, node.sub[], drop = FALSE] %>%
-effectiveSize()
-print("effective sample size")
+node.sub <- subset_draws(laa.samples, variable = "par_m")
+node.sub[,sample(1:ncol(node.sub), 36)] %>% mcmc_trace()
+summarise_draws(node.sub, median, rhat, ess_bulk, ess_tail) %>%
+  arrange(-rhat)
 
-node.sub <- grep("sig_par_", colnames(laa.samples), value = TRUE)
-laa.samples[, node.sub[], drop = FALSE] %>% mcmc_trace()
-pl <- laa.samples[, node.sub[], drop = FALSE] %>% gelman.diag()
-pl$psrf[  which(pl$psrf[, 1] > 1.1),] 
-pl <- laa.samples[, node.sub[], drop = FALSE] %>%
-effectiveSize()
-print("effective sample size")
-pl[which(pl < 500)]
+node.sub <- subset_draws(laa.samples, variable = "sig_par_m")
+node.sub %>% mcmc_trace()
+summarise_draws(node.sub, median, rhat, ess_bulk, ess_tail) %>%
+  arrange(-rhat)
 
-node.sub <- grep("^linf\\[", colnames(laa.samples[[1]]), value = TRUE)
-laa.samples[, node.sub[], drop = FALSE] %>% mcmc_trace()
-laa.samples[, node.sub[], drop = FALSE] %>% gelman.diag()
-print("effective sample size")
-laa.samples[, node.sub[], drop = FALSE] %>% effectiveSize()
+node.sub <- subset_draws(laa.samples, variable = "lb_mu")
+node.sub %>% mcmc_trace()
+summarise_draws(node.sub, median, rhat, ess_bulk, ess_tail) %>%
+  arrange(-rhat)
 
-node.sub <- grep("^lb_mu\\[", colnames(laa.samples), value = TRUE)
-laa.samples[, node.sub[], drop = FALSE] %>% mcmc_trace()
-laa.samples[, node.sub[], drop = FALSE] %>% gelman.diag()
-print("effective sample size")
-laa.samples[, node.sub[], drop = FALSE] %>% effectiveSize()
+node.sub <- subset_draws(as_draws(laa.samples), variable = "corY")
+node.sub %>% mcmc_trace()
+summarise_draws(node.sub, median, rhat, ess_bulk, ess_tail) 
 
-node.sub <- grep("^corY_f\\[", colnames(laa.samples[[1]]), value = TRUE)
-laa.samples[, node.sub[], drop = FALSE] %>% mcmc_trace()
-
-#node.sub <- grep("^Ustar\\[", colnames(laa.samples[[1]]), value = TRUE) 
-node.sub <- grep("^corY\\[", colnames(laa.samples[[1]]), value = TRUE) 
-laa.samples[, node.sub[sample(1:length(node.sub), 36)], drop = FALSE] %>% mcmc_trace()
-pl <- laa.samples[, node.sub[], drop = FALSE] %>% gelman.diag(multivariate = FALSE)
-pl$psrf[  which(pl$psrf[, 1] > 1.1),] 
-pl <- laa.samples[, node.sub[], drop = FALSE] %>%
-effectiveSize()
-print("effective sample size")
-pl[which(pl < 500 & pl > 0)]
 ```
 
 ### Predicted / observed
 
 ```{r}
-
 keeps <- which(!is.na(laa.samples[1, ]))
 laa.samples_tmp <- laa.samples[, keeps]
 
-laa.samples_tmp2 <- laa.samples_tmp %>%
+node.sub <- subset_draws(laa.samples_tmp, variable = "l_mu")
+
+dfl <- node.sub[,sample(1:ncol(node.sub), 20000)] %>% 
   spread_draws(l_mu[gy,i], sep = ",") %>%
   median_qi()
 
-dfl_old <- data.biph %>%
+data.biph %>%
   select(length_mm,spat.unit, smo.age, tot.age.dec, age.type) %>%
   rename(obs_l = length_mm) %>%
   mutate(ind.id = row_number()) %>%
-  #slice_sample(n = 40000) %>%
-  left_join(laa.samples_tmp2 %>%
+  left_join(dfl %>%
               rename(pred.l = l_mu,
                      ind.id = i) %>%
-              ungroup(), join_by(ind.id))
-
-dfl_old %>%
+              ungroup(), join_by(ind.id)) %>%
   filter(age.type == "juve.only") %>%
-  #filter(age.type == "both") %>%
+  filter(trunc(tot.age.dec) == gy-1) %>% 
+  ungroup() %>%
+  ggplot() +
+  geom_abline(slope = 1) +
+  geom_point(aes(x = obs_l, y = pred.l), shape = 4,alpha = 0.5) +
+  theme_minimal() +
+  facet_wrap(~spat.unit)  +
+  labs(caption = "Sea length at age" ) +
+
+data.biph %>%
+  select(length_mm,spat.unit, smo.age, tot.age.dec, age.type) %>%
+  rename(obs_l = length_mm) %>%
+  mutate(ind.id = row_number()) %>%
+  left_join(dfl %>%
+              rename(pred.l = l_mu,
+                     ind.id = i) %>%
+              ungroup(), join_by(ind.id)) %>%
+  filter(age.type == "both") %>%
   filter(trunc(tot.age.dec) == gy-1) %>% 
   ungroup() %>%
   ggplot() +
@@ -272,7 +264,6 @@ dfl_old %>%
   theme_minimal() +
   facet_wrap(~spat.unit)  +
   labs(caption = "Sea length at age" )
-
 ```
 ### Predicted curves
 
@@ -379,64 +370,50 @@ laa.samples %>%
 
 ```{r}
 tmpP <- laa.samples %>%
-  gather_draws(par_m[year, supar], sep = ",") %>%
+  gather_draws(par_m[year, supar], sep = ",") 
+
+gc()
+tmpP %>%
   ungroup() %>%
   mutate(su = if_else(supar > 14, supar - 14, supar),
          par = if_else(supar > 14, "k", "linf")) %>%
   left_join(data.biph %>% distinct(su, spat.unit)) %>% 
-  mutate(year = year + 2006) #%>%
-  # mutate(year = coh + 1998,
-  #        sex = ifelse(sex == 1, "m","f")) %>%
-  #mutate(m_length = median(.value), .by = c(year,sex)) %>%
-  #filter(year < 2026)
-
+  mutate(year = year + 2006) %>%
+  filter(year > 2010) %>%
+  ungroup() %>%
+  #filter(par == "linf") %>%
+  #filter(par == "k") %>%
+  ggplot() +
+  geom_boxplot(aes(x = year, y = exp(.value), group = year), color = "#00BFC4", outliers = FALSE) +
+  #geom_line(aes(y = exp(m_length), x = year), color = "#00BFC4", alpha = 0.4) +
+  facet_wrap(par~spat.unit, scales = "free") + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90,hjust = 1, size = rel(.75))) +
+  ylim(0,0.)
+  
 # tmpK %>%
+#   filter(sex == "f",
+#          !spat.unit == "Ireland_west"
+#          ) %>%
+#   ungroup() %>%
 #   ggplot() +
-#   geom_boxplot(aes(x = factor(year), y = exp(.value), color = factor(sex)),
-#                outliers = FALSE) +
-#   facet_wrap(~sex) +
+#   geom_boxplot(aes(x = year, y = exp(.value), group = year), color = "#F8766D", outliers = FALSE) +
+#   geom_line(aes(y = exp(m_length), x = year), color = "#F8766D", alpha = 0.5) +
+#   facet_wrap(~spat.unit, scales = "free") + 
 #   theme_minimal() +
 #   theme(axis.text.x = element_text(angle = 90,hjust = 1, size = rel(.75))) +
 #   labs(x = "year", y = "k")
-
-tmpP %>%
-  filter(year > 2010) %>%
-   # filter(#sex == "m",
-   #        spat.unit == "Baltic-sea-AU5"
-   #        ) %>%
-  ungroup() %>%
-  filter(par == "k") %>%
-  ggplot() +
-  geom_boxplot(aes(x = year, y = exp(.value), group = year), color = "#00BFC4", outliers = FALSE) +
-#  geom_line(aes(y = exp(m_length), x = year), color = "#00BFC4", alpha = 0.4) +
-  facet_wrap(~spat.unit, scales = "free") + 
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 90,hjust = 1, size = rel(.75))) 
-  #labs(x = "year", y = "k")
-  
-tmpK %>%
-  filter(sex == "f",
-         !spat.unit == "Ireland_west"
-         ) %>%
-  ungroup() %>%
-  ggplot() +
-  geom_boxplot(aes(x = year, y = exp(.value), group = year), color = "#F8766D", outliers = FALSE) +
-  geom_line(aes(y = exp(m_length), x = year), color = "#F8766D", alpha = 0.5) +
-  facet_wrap(~spat.unit, scales = "free") + 
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 90,hjust = 1, size = rel(.75))) +
-  labs(x = "year", y = "k")
-
-tmpK %>%
-  filter(spat.unit == "Ireland_west") %>%
-  ungroup() %>%
-  ggplot() +
-  geom_boxplot(aes(x = year, y = exp(.value), group = year, color = sex), outliers = FALSE) +
-  geom_line(aes(y = exp(m_length), x = year, color = sex), alpha = 0.5) +
-  facet_wrap(~sex, scales = "free") + 
-  theme_minimal() +
-  theme(axis.text.x = element_text(angle = 90,hjust = 1, size = rel(.75))) +
-  labs(x = "year", y = "k", title = "Ireland_west w. very high k", caption = "line is global median by year and sex")
+# 
+# tmpK %>%
+#   filter(spat.unit == "Ireland_west") %>%
+#   ungroup() %>%
+#   ggplot() +
+#   geom_boxplot(aes(x = year, y = exp(.value), group = year, color = sex), outliers = FALSE) +
+#   geom_line(aes(y = exp(m_length), x = year, color = sex), alpha = 0.5) +
+#   facet_wrap(~sex, scales = "free") + 
+#   theme_minimal() +
+#   theme(axis.text.x = element_text(angle = 90,hjust = 1, size = rel(.75))) +
+#   labs(x = "year", y = "k", title = "Ireland_west w. very high k", caption = "line is global median by year and sex")
 ```
 
 ### Correlation/covariance matrix
