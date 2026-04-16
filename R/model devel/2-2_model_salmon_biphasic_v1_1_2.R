@@ -16,22 +16,28 @@ biph.code <- nimbleCode({
   # k & linf values (g and linf from fb)
   l_sd_m <- sqrt(log(1 + (278^2) / (1378^2)))
   l_sd_f <- sqrt(log(1 + (45^2) / (185^2)))
+  
   l_mean_m <- log(1378) - 0.5 * log(l_sd_m)^2
-  l_mean_f <- log(185) - 0.5 * log(l_sd_f)^2  
+              
+  l_mean_f <- log(185) - 0.5 * log(l_sd_f)^2
+  
   k_sd_m <- sqrt(log(1 + (0.28^2) / (0.43^2)))
-  k_sd_f <- sqrt(log(1 + (0.15^2) / (0.31^2)))
+  k_sd_f <- sqrt(log(1 + (0.15^2) / (0.31^2))) # TEST THIS 
   k_mean_m <- log(0.43) - 0.5 * log(k_sd_m)^2
   k_mean_f <- log(0.43) - 0.5 * log(k_sd_f)^2 
-  
+  lb_sd <- sqrt(log(1 + (3^2) / (17^2)))
+  lb_mean <- log(17) - 0.5 * log(lb_sd)^2
+
   # https://onlinelibrary.wiley.com/doi/full/10.1111/j.1095-8649.2012.03370.x
   # mean(c(152,167,195,174,154,164,160,215,152,167,195,174,166,211,163,172,207,223,171,171,176,235,173,160,215,187,235,22,146,147,192,304,239,152,198,280,207,223))
   # sd(c(152,167,195,174,154,164,160,215,152,167,195,174,166,211,163,172,207,223,171,171,176,235,173,160,215,187,235,22,146,147,192,304,239,152,198,280,207,223))
+  # lbmu / sd DOI: 10.1111/j.1095-8649.2009.02497.x  sd is guesstimate
   
   mu_par_f[1] ~ dnorm(l_mean_f, sd = 1)
-  mu_par_f[2] ~ dnorm(k_mean_f, sd = 0.5)
+  mu_par_f[2] ~ dnorm(k_mean_f, sd = 0.1)
   sig_par_f[1] ~ dlnorm(log(l_sd_f), sdlog = 0.1)
   sig_par_f[2] ~ dlnorm(log(k_sd_f), sdlog = 0.1)
-  
+
   # for(i in 1:nsu){
   #   mu_par_m[i] ~ dnorm(l_mean_m, sd = 1)
   #   mu_par_m[(nsu+i)] ~ dnorm(k_mean_m, sd = 0.5)  
@@ -96,8 +102,7 @@ biph.code <- nimbleCode({
     #bL[i] ~ dnorm(mean = 0, sd = 1) 
     #bk[i] ~ dnorm(mean = 0, sd = 1) 
     smp[1:nK,i] ~ ddirch(alpha[1:nK])
-    lb_mu[i] ~ dnorm(17, sd = 3) 
-    #lb.mu[i] ~ dunif(12, 22) # ~15 to 20 mm, DOI: 10.1111/j.1095-8649.2009.02497.x  sd is guesstimate
+    lb_mu[i] ~ dlnorm(lb_mean, sdlog = lb_sd)
   }
   
   sig_l ~ dexp(1/350)
@@ -179,7 +184,7 @@ biph.code <- nimbleCode({
 set.seed(1)
 data.biph_m <- sallaa %>%
   filter(age.type == "both") %>%
-  slice_sample(n = 50000)
+  slice_sample(n = 30000)
 
 data.biph <- sallaa %>%
   filter(age.type == "juve.only") %>% 
@@ -232,7 +237,7 @@ consts = list(nind = nrow(data.biph), # n individuals change when >1 sample per 
 
 inits <- function(){
   list(sig_l = rexp(1,1/150),
-       lb_mu = runif(consts$nsu,13,19),
+       lb_mu = rlnorm(consts$nsu,13,19),
        sig_par_m = c(rlnorm(consts$nsu,log(0.2),sdlog = 0.1),
                      rlnorm(consts$nsu,log(0.6),sdlog = 0.1)),
        sig_par_f = c(rlnorm(1,log(0.2),sdlog = 0.1),
@@ -287,6 +292,18 @@ for(i in 1:length(mvars)){
   print(paste0(mvars[i]," ",biph.model$calculate(mvars[i]) ))
 }
 
+biph.model$simulate(nodes = biph.model$getNodeNames(stochOnly = TRUE))
+
+# 3. Extract the simulated intermediate means and data
+#simulated_groups <- biph.model$l_mean_m_bs # replace with your node name
+simulated_groups <- biph.model$par_m # replace with your node name
+simulated_data <- biph.model$l_mu          # replace with your data node name
+
+# 4. Visualize the log-scale vs. original scale
+hist(as.vector(simulated_groups))
+hist(simulated_groups[,15:28])
+hist(simulated_groups[,1:14], breaks = 50)
+
 # compile model
 biph.c <- compileNimble(biph.model)
 
@@ -308,28 +325,11 @@ Sys.time() - t
 # MCMC Samples
 t <- Sys.time()
 #biph.samples <- runMCMC(biph.mcmcc, niter = 1000, nburnin = 500, nchains = 1, samplesAsCodaMCMC = TRUE, WAIC = TRUE)
-biph.samples <- runMCMC(biph1_1.mcmcc, niter = 8000, nburnin = 5000, thin = 2, nchains = 1, samplesAsCodaMCMC = TRUE, WAIC = TRUE)
+biph.samples <- runMCMC(biph.mcmcc, niter = 7000, nburnin = 5000, thin = 2, nchains = 1, samplesAsCodaMCMC = TRUE, WAIC = TRUE)
 Sys.time() - t
 biph1_1.samples$WAIC
 
-# biph1_1.samples$WAIC 312954.1
-# biph1_1.samples$WAIC 339280.8
-# node.sub <- grep("corY", colnames(biph1_1.samples$samples[[1]]), value = TRUE) 
-# biph1_1.samples$samples[, node.sub[], drop = FALSE] %>% gelman.diag() 
-
 # sig_l"     "lb_mu"     "corZ"      "corY_f"    "corY"      "smp"       "sig_par_m" "mu_par_m"  "sig_par_f"
 # [10] "mu_par_f"  "smo_age"   "par_m"     "par_f"     "length_mm" "l_mu"     
-node.sub <- grep("^par_f", colnames(biph1_1.samples$samples), value = TRUE)
-biph1_1.samples$samples[, node.sub[sample(1:length(node.sub), 20)], drop = FALSE] %>% gelman.diag() 
-biph1_1.samples$samples[, node.sub[], drop = FALSE] %>% gelman.diag() 
-
-biph1_1.samples$samples[, node.sub[sample(1:length(node.sub), 20)], drop = FALSE] %>% mcmc_trace() 
-biph1_1.samples$samples[, node.sub[], drop = FALSE] %>%  effectiveSize()
-biph1_1.samples$samples[, node.sub[14:27], drop = FALSE] %>% mcmc_trace()
-#gc()
-
-#saveRDS(biph9.samples, file = paste0(home,"/data/biph9_samples_1025.RData"))
-#biph9.samples <- as.matrix(biph9.mcmcc$mvSamples)
-
 # Save samples
-saveRDS(biph1_1.samples, file = paste0(home,"/data/biph1_1_samples_",Sys.Date(),".RData"))
+saveRDS(biph.samples, file = paste0(home,"/data/biph1_1_2_samples_",Sys.Date(),".RData"))

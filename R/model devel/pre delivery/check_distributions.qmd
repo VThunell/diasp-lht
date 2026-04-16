@@ -1,0 +1,222 @@
+---
+title: "Salmon Biphasic model v1"
+author: "Viktor Thunell" 
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+format: 
+  html:
+    code-fold: true
+    code-summary: "Show code"
+    page-layout: full
+    embed-resources: true
+    toc: true
+knitr: 
+  opts_chunk:
+    fig.align: center
+    out-width: 80%
+editor: source
+execute: 
+  echo: true
+  eval: true
+  cache: true
+---
+
+
+```{r}
+# for the exponential I need to specify rate and the inverse of the mean or a fraction of he mean concentrates mass below the mean.
+ggplot() +
+   stat_function(fun = dexp, args = list(rate = 1/(200)), xlim = c(0,1000))
+mean(rexp(10000, rate = 1/(139/5)) < 139)
+
+l.lsd <- sqrt(log(1 + (278^2) / (1378^2)))
+l.lmean <- log(1378) - 0.5 * l.lsd^2
+k.lsd <- sqrt(log(1 + (0.28^2) / (0.43^2)))
+k.lmean <- log(0.43) - 0.5 * k.lsd^2  
+
+dlnorm(1000, meanlog = l.lmean, sdlog = l.lsd)
+ggplot() +
+   stat_function(fun = dlnorm, args = list(meanlog = l.lmean, sdlog = l.lsd), xlim = c(0,10000))
+ggplot() +
+   stat_function(fun = dlnorm, args = list(meanlog = k.lmean, sdlog = k.lsd), xlim = c(0,10000))
+
+g.lsd <- sqrt(log(1 + (10^2) / (50^2))) # sqrt of variance (= sd) of the lognormal distr. 50 and 10 is arbitrary atm.
+ggplot() +
+   stat_function(fun = dlnorm, args = list(meanlog = log(g.lsd), sdlog = 0.1), xlim = c(0,1))
+1 / sqrt(10)
+                 
+ggplot() +
+   stat_function(fun = dlnorm, args = list(meanlog = log(0.5), sdlog = 0.5), xlim = c(0,10))
+
+ggplot() +
+   stat_function(fun = dnorm, args = list(mean = 2, sd = 0.5), xlim = c(0,4))
+
+
+exp(log(k.lsd))
+lnorm(1,log(k.lsd), sd = 0.3)
+ggplot() +
+   stat_function(fun = dnorm, args = list(mean = log(k.lsd), sd = 10), xlim = c(0,30)) 
+  
+
+ggplot() +
+  #stat_function(fun = dlnorm, args = list(meanlog = log(100), sdlog = 10), xlim = c(0,400))
+stat_function(fun = dnorm, args = list(mean = 250, sd = 50), xlim = c(0,500))
+```
+```{r}
+sallaa %>%
+  filter(age.type == "both") %>%
+  ggplot() +
+  geom_density(aes(juv.age, color = spat.unit)) +
+  facet_wrap(~spat.unit)
+# for poisson for smotl age
+pmf <- dpois(0:15, lambda = 1.5)
+
+ggplot(data.frame(0:15, pmf), aes(0:15, pmf)) +
+  geom_col(width = 0.8, fill = "steelblue") +
+  labs(x = "x", y = "P(X = x)", title = "Poisson(λ = 2)") +
+  theme_minimal()
+
+ggplot() +
+  stat_function(fun = dgamma, args = list(shape = 1.5, rate = 1/.36), xlim = c(0,6)) +
+  stat_function(fun = dexp, args = list(rate = 1/0.36), xlim = c(0,6), color = "red")
+
+ggplot() +
+  stat_function(fun = dgamma, args = list(shape = 1, rate = 1), xlim = c(0,10)) +
+  stat_function(fun = dgamma, args = list(shape = 2, rate = 1), color = "red", , xlim = c(0,10))
+mean(rgamma(1000,shape = , rate = 1))
+dgamma(c(1:4), shape = 25, scale = 0.1)
+```
+
+
+```{r}
+dg<-rgamma(6, shape = 25, scale = 0.1)
+x=dg/sum(dg)
+
+rcat(10, x)
+```
+
+
+```{r}
+
+ggplot() +
+   stat_function(fun = dlnorm, args = list(meanlog = log(139), sdlog = 1), xlim = c(0,500)) +
+   stat_function(fun = dlnorm, args = list(meanlog = 139, sdlog = 1), xlim = c(0,500), color = "red")
+
+# gamma w mean = 2 makes shape = 2*rate and variance = 2/rate. With sd = 0.5, variance = 0.25, rate=8 and shape 16.
+# gamma w mean = 2 makes shape = 2*rate and variance = 2/rate. With sd = 1.5, variance = 1.5^2, rate=8 and shape 16.
+ggplot() +
+  stat_function(fun = dgamma, args = list(shape = 25, scale = 0.1), xlim = c(0,6)) +
+  geom_vline(xintercept = 2) +
+  stat_function(fun = dgamma, args = list(shape = 16, rate = 8), xlim = c(0,15), color = "red")
+```
+
+
+```{r}
+k_lsd <- sqrt(log(1 + (0.28^2) / (0.43^2))) # sqrt of variance
+k_lmean <- log(0.43) - 0.5 * k_lsd^2  
+
+set.seed(1)
+draws <- rlnorm(1e5, meanlog = mean_log, sdlog = sd_log)
+
+# quick checks
+mean(draws)   # ~0.43
+sd(draws)     # ~0.28
+quantile(draws, c(0.025, 0.5, 0.975))
+
+# plot density with quantiles
+library(ggplot2)
+
+q <- quantile(draws, c(0.025, 0.5, 0.975))
+
+ggplot(data.frame(x = draws), aes(x)) +
+  geom_density(fill = "skyblue", alpha = 0.4) +
+  geom_vline(xintercept = q, linetype = c("dashed", "solid", "dashed"),
+             color = c("red", "black", "red")) +
+  labs(
+    title = "Lognormal prior (mean ≈ 0.43, sd ≈ 0.28 on original scale)",
+    x = "Value", y = "Density"
+  ) +
+  theme_minimal(base_size = 14)
+```
+
+```{r}
+badNodes <- character()
+for(n in stochNodes){
+  # calculate only this node (isolates its contribution)
+  lp <- try(biph8.model$calculate(n), silent = TRUE)
+  # try to fetch its log-prob
+  lpNode <- try(biph8.model$getLogProb(n), silent = TRUE)
+  if(inherits(lpNode, "try-error")) {
+    cat("can't get logprob for", n, "\n")
+  } else {
+    if(is.infinite(lpNode) || is.nan(lpNode) || lpNode < -1e8) badNodes <- c(badNodes, n)
+  }
+}
+cat("Suspect nodes (very small or -Inf):\n"); print(badNodes)
+biph8.model$length_mm[10905]
+
+```
+
+```{r}
+L <- rnorm(10^7, 658, 186)   # natural scale
+L <- L[L > 0]                # discard impossible negative values
+logL <- log(L)
+sd(logL)
+mean(logL)   # your α prior mean
+
+sdsl <- sqrt(log(1 + (124*1.5/658)^2)) 
+msl <- log(658) - (sdsl^2)/2
+ggplot() +
+  stat_function(fun = dlnorm, args = list(meanlog = msl, sdlog = sqrt(log(1 + (124/658)^2))), xlim = c(100,1300)) +
+  #geom_vline(xintercept = exp(log(658)), color = "red" ) +
+  stat_function(fun = dnorm, args = list(658, sd = 124), xlim = c(100,1300), color = "red") +
+  labs(title = "red = Durif 2005 Normal, black = assumed lognormal")
+  
+  # sdsl <- sqrt(log(1 + (124*1.5/658)^2))  # log scale sd and flattened (times 1.5)
+  # msl <- log(658) - sdsl^2/2 #Durif 2005, https://doi.org/10.1111/j.0022-1112.2005.00662.x
+  # sdbsl <- sqrt(log(1 + (23*1.5/393)^2))
+  # mbsl <- log(393/658) - sdbsl^2/2 #log rat
+
+ggplot() +
+  stat_function(fun = dlnorm, args = list(meanlog = log(658), sdlog = sqrt(log(1 + (124*0.5/658)^2))), xlim = c(0,1500)) +
+  #geom_vline(xintercept = log(658)) +
+  #geom_vline(xintercept = exp(log(658) + sdsl^2/2), color = "red" )
+  #stat_function(fun = dlnorm, args = list(meanlog = exp(msl  sdsl^2/2, sdlog = sd(logL)), xlim = c(0,1500), color = "blue")
+  stat_function(fun = dnorm, args = list(mean = msl, sd = sdsl), xlim = c(5,8))
+  #stat_function(fun = dnorm, args = list(mean = log(658), sd = sqrt(log(1 + (124*1.5/658)^2))), xlim = c(5,8), color = "red")
+
+m <- 0
+sd <- 1
+Z <- rnorm(10000,m,sd)
+X <- exp(m + sd*Z)
+ggplot() +
+geom_density(aes(X))
+  
+sd <- sqrt(log(1 + (124/658)^2)) # CV = 0.5
+m <- log(658) - 0.5 * sd^2
+Z <- rlnorm(10000,m,sd)
+ggplot() +
+  geom_density(aes(Z))
+
+
+```
+
+```{r}
+
+a <- data.frame()
+for(i in 1:length(dataNodes)){
+  a <- rbind(a, cbind(dataNodes[i],fec.model$calculate(dataNodes[i])))
+}
+
+b <- as.data.frame(a) %>% 
+  filter(!is.finite(as.numeric(V2))) %>%
+  mutate(digits = as.numeric(str_extract_all(V1, "\\d+")))
+  
+data.fec[b$digits,] %>%
+  ggplot(aes(length.lc, n.eggs)) +
+  geom_point(data = data.fec %>% filter(spat.unit == "Ireland_west"), 
+             aes(length.lc, n.eggs), color = "lightblue",alpha = 0.5) +
+  geom_point() 
+
+#  geom_smooth(method = "lm", se = TRUE) 
+
+```
+

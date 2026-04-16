@@ -1,0 +1,508 @@
+---
+title: "Salmon Biphasic Growth and Fecundity  model"
+author: "Viktor Thunell" 
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+format: 
+  html:
+    code-fold: true
+    code-summary: "Show code"
+    page-layout: full
+    embed-resources: true
+    toc: true
+knitr: 
+  opts_chunk:
+    fig.align: center
+    out-width: 80%
+editor: source
+execute: 
+  echo: true
+  eval: true
+  cache: true
+---
+
+## Load libraries
+
+```{r libs}
+#| message: false
+#| warning: false
+#| cache: false
+
+# Load libraries, install if needed
+pkgs <- c("tidyverse", "tidylog", "devtools","viridis","nls.multstart", "broom", "patchwork", "coda", "boot", "tidybayes","bayesplot", "nimble", "here", "purrr")
+
+# remotes::install_github("nimble-dev/nimble", ref = "devel", subdir = "packages/nimble")
+
+if(length(setdiff(pkgs,rownames(installed.packages()))) > 0){
+    install.packages(setdiff(pkgs, rownames(installed.packages())), dependencies = T)
+  }
+
+invisible(lapply(pkgs, library, character.only = T))
+
+options(ggplot2.continuous.colour = "viridis")
+theme_set(theme_minimal()) # check why global theme option not working when rendering
+
+# Set path
+color_scheme_set("viridis")
+home <- here::here()
+```
+
+## Read and prep model data
+
+```{r}
+#| message: false
+#| warning: false
+#| cache: false
+#set.seed(123)
+## Read data
+sallaa <- readRDS(file = paste0(home,"/data/data-for-2-2/salmon-laa_2025-12-21.RData")) %>%
+  rename(year = fi_year,
+         site = sai_location,
+         sea.age = sea_age_year,
+         juv.age = juvenile_age_year,
+         tot.age = tot_age_year,
+         lat = fisa_y_4326,
+         lon = fisa_x_4326) %>%
+  #filter out tot.age = 0 individuals
+  filter(!(sea.age == 0 & juv.age == 0)) %>%
+  #filter out non-aged individuals (~90000 individuals)
+  filter(!(is.na(sea.age) & is.na(juv.age))) %>%
+  # removes smolt.age = 0:
+  filter(!(age.type == "both" & juv.age == 0)) %>%
+  mutate(hatch.year = year-tot.age) %>% # to filter data based o hatch year instead of year to predict growth pars before catch year
+  filter(#!is.na(juv.age), # removes age.type = "sea.only"
+         !is.na(year),
+         hatch.year > 1997)
+  
+data.biph <- sallaa %>%
+  filter(!(is.na(sex) & age.type == "both")) %>% # removes 27 000 rows
+  mutate(yday.may1 = if_else(is.na(date), 1, yday(date) - yday("2025-05-01")+1), 
+         doy.dec = if_else(yday.may1 > 0, yday.may1, yday.may1+365)/365,
+         tot.age.dec = if_else(yday.may1 > 0, tot.age+doy.dec, tot.age+doy.dec-1),
+         smo.age = if_else(age.type == "both", juv.age, NA),
+         sea.age = if_else(is.na(sea.age), 0, sea.age),
+         g.year = trunc(tot.age.dec)+1, # + 1 to index age 0 individuals
+         hatch.year.f = as.numeric(factor(hatch.year, levels = sort(unique(hatch.year)), labels = seq_along(sort(unique(hatch.year))))),
+         year.f = as.integer(factor(year)),
+         sex = as.integer(if_else(sex == "f", 1,2)),
+         su = as.integer(factor(spat.unit))) %>%
+  mutate(ind.id = row_number())
+
+data.b <- data.biph %>%
+  filter(!is.na(smo.age))
+
+data.j <- data.biph %>%
+  filter(age.type == "juve.only") %>%
+  rename(length_mm_j = length_mm)
+
+
+# Fecundity 
+salfec <- readRDS(file = paste0(home,"/data/data-for-2-2/salmon-fec_2025-12-17.RData"))
+
+data.fec <- salfec %>%
+  #filter(!sai_cou_code == "IE") %>%
+  drop_na(spat.unit) %>%
+  mutate(n.eggs = if_else(is.na(n.eggs.tot), n.eggs.str, n.eggs.tot),
+         su = as.integer(factor(spat.unit)),
+         length.lc = log(length_mm) - log(mean(length_mm)))
+```
+
+## Length at age 
+
+### Plot length at age data
+```{r}
+sallaa %>%
+  drop_na(sex) %>%
+  ggplot(aes(tot.age, length_mm, color = sex)) +
+  geom_point() +
+  facet_grid(age.type~sex) +
+  scale_x_continuous(breaks = seq(0, 13, 1) ) +
+  theme_light() 
+
+# If dropping all inds where both sea and sm age is NA
+sallaa %>% 
+  ggplot() +
+  geom_density(aes(x = tot.age), fill = "deeppink", alpha = 0.5) +
+  xlim(0, 13) +
+
+sallaa %>% 
+  ggplot() + 
+  geom_density(aes(x = length_mm), fill = "deeppink", alpha = 0.5)
+
+sallaa %>% 
+  drop_na(sea.age,sex) %>%
+  filter(spat.unit == "Ireland_west") %>%
+  ggplot() +
+  geom_density(aes(x = length_mm, fill = factor(sex)), alpha = 0.5) +
+  facet_wrap(~tot.age)
+
+# age at smoltification by spatial unit
+sallaa %>%
+  filter(age.type == "both") %>%
+  ggplot() +
+  geom_density(aes(x = juv.age, color = spat.unit),  alpha = 0.5) +
+  facet_wrap(~spat.unit) +
+  xlim(-1, 5)
+
+# juvenile size at age
+sallaa %>%
+  filter(age.type == "juve.only") %>%
+  ggplot(aes(x = juv.age, y =length_mm, color = spat.unit)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = lm) +
+  facet_wrap(~spat.unit)
+  
+sallaa %>%
+  filter(age.type == "both") %>%
+  ggplot(aes(tot.age, length_mm, color = spat.unit)) +
+  geom_point() +
+  facet_wrap(~spat.unit) +
+  scale_x_continuous(breaks = seq(0, 13, 1) ) +
+  theme_minimal()
+
+sallaa %>%
+  filter(age.type == "both",
+         !is.na(sex)) %>%
+  summarise(ml = mean(length_mm), .by = c(sex,spat.unit,)) %>%
+  ggplot() +
+  geom_point(aes(x = ml, y = spat.unit, color = factor(sex)),
+               outliers = FALSE) +
+  theme_minimal() 
+  
+```
+
+### Define data
+```{r}
+
+```
+
+
+### Source models / Load samples
+```{r}
+
+# readRDS("/Users/vitl0001/gitProjects/diasp-lht/data/bipj06_samples_2025-12-20.RData")$WAIC
+# readRDS("/Users/vitl0001/gitProjects/diasp-lht/data/bipj06_samples_2025-12-22.RData")$WAIC
+
+laa.samples <- readRDS("/Users/vitl0001/gitProjects/diasp-lht/data/bipj06_samples_2025-12-22.RData")$samples
+
+# # Or source model code and mcmc (load libs and data)
+# t <- Sys.time()
+# source(file = paste0(home,"/R/model devel/2-2_model_salmon_biphasic_v6.R"))
+# Sys.time() - t # approx 12 hours with 12 000 NUTS mcmc samples
+
+```
+
+### Traces and ‘potential scale reduction factor’
+
+```{r}
+node.sub <- grep("sig.l", colnames(laa.samples[[1]]), value = TRUE)
+laa.samples[, node.sub[], drop = FALSE] %>% mcmc_trace()
+laa.samples[, node.sub[], drop = FALSE] %>% gelman.diag()
+laa.samples[, node.sub[], drop = FALSE] %>%
+effectiveSize()
+
+node.sub <- grep("^g\\[", colnames(laa.samples[[1]]), value = TRUE)
+laa.samples[, node.sub[], drop = FALSE] %>% mcmc_trace()
+laa.samples[, node.sub[], drop = FALSE] %>% gelman.diag()
+print("effective sample size")
+laa.samples[, node.sub[], drop = FALSE] %>% effectiveSize()
+  
+node.sub <- grep("^k.year\\[", colnames(laa.samples[[1]]), value = TRUE)
+laa.samples[, node.sub[sample(1:length(node.sub), 36)], drop = FALSE] %>% mcmc_trace()
+pl <- laa.samples[, node.sub[], drop = FALSE] %>% gelman.diag()
+pl$psrf[  which(pl$psrf[, 1] > 1.1),] 
+pl <- laa.samples[, node.sub[], drop = FALSE] %>%
+effectiveSize()
+print("effective sample size")
+pl[which(pl < 500)]
+
+node.sub <- grep("^linf\\[", colnames(laa.samples[[1]]), value = TRUE)
+laa.samples[, node.sub[], drop = FALSE] %>% mcmc_trace()
+laa.samples[, node.sub[], drop = FALSE] %>% gelman.diag()
+print("effective sample size")
+laa.samples[, node.sub[], drop = FALSE] %>% effectiveSize()
+
+node.sub <- grep("^lb.mu\\[", colnames(laa.samples[[1]]), value = TRUE)
+laa.samples[, node.sub[], drop = FALSE] %>% mcmc_trace()
+laa.samples[, node.sub[], drop = FALSE] %>% gelman.diag()
+print("effective sample size")
+laa.samples[, node.sub[], drop = FALSE] %>% effectiveSize()
+
+#node.sub <- grep("^Ustar\\[", colnames(laa.samples[[1]]), value = TRUE) 
+node.sub <- grep("^R\\[", colnames(laa.samples[[1]]), value = TRUE) 
+laa.samples[, node.sub[sample(1:length(node.sub), 36)], drop = FALSE] %>% mcmc_trace()
+pl <- laa.samples[, node.sub[], drop = FALSE] %>% gelman.diag(multivariate = FALSE)
+pl$psrf[  which(pl$psrf[, 1] > 1.1),] 
+pl <- laa.samples[, node.sub[], drop = FALSE] %>%
+effectiveSize()
+print("effective sample size")
+pl[which(pl < 500 & pl > 0)]
+```
+
+### Predicted / observed
+
+```{r}
+# juveniles
+dfj <- laa.samples %>%
+  spread_draws(l.mu.j[i], sep = ",") %>%
+  median_qi() %>%
+  rename(pred.l = l.mu.j,
+         ind.id = i) %>%
+  ungroup() %>%
+  left_join(data.j %>%
+              select(length_mm_j,spat.unit) %>%
+              rename(obs.l = length_mm_j) %>%
+              mutate(ind.id = row_number()), by = "ind.id")
+
+dfj %>%
+  ggplot() +
+  geom_abline(slope = 1) +
+  geom_point(aes(x = obs.l, y = pred.l, color = spat.unit),shape = 4,alpha = 0.5) +
+  theme_minimal() +
+  facet_wrap(~spat.unit)
+
+# l.mu[su[i],smo.age[i],coh[i],g.year[i]]
+# adults, l.mu[su[i],smo.age[i],coh[i],sex[i],g.year[i]]
+dfl <- laa.samples %>%
+  spread_draws(l.mu[j,k,l,m,n], sep = ",") %>%
+  median_qi() %>%  
+  rename(pred.l = l.mu,
+         su = j,
+         smo.age = k,
+         hatch.year.f = l,
+         sex = m,
+         g.year = n) %>%
+  ungroup() %>%
+  left_join(data.biph %>%
+              select(length_mm,spat.unit,smo.age,hatch.year.f,sex,g.year,su) %>%
+              rename(obs.l = length_mm)) 
+
+dfl %>%
+  ggplot() +
+  geom_abline(slope = 1) +
+  geom_point(aes(x = obs.l, y = pred.l, color = spat.unit),shape = 4,alpha = 0.5) +
+  theme_minimal() +
+  facet_wrap(~spat.unit)
+
+```
+
+### length at age variables
+
+```{r}
+# l.mu[j,k,l,m,n] <- l.mu[j,k,l,m,n-1] + step(k - n)*exp(g[j]) +
+#             (1-step(k - n)) * ((exp(linf[j,m]) - l.mu[j,k,l,m,n-1])*(1 - 
+# exp(-exp(k.year[j,m,(l+(n-1))]))))
+  
+# length_mm_j[ii] ~ dnorm(l.mu.j[ii], sd = sig.lj)
+# l.mu.j[ii] <- lb.mu[suj[ii]] + exp(g[suj[ii]])*gj.year[ii]
+
+laa.samples %>%
+  gather_draws(linf[su,sex], sep = ",") %>%
+  ungroup() %>%
+  left_join(data.biph %>% distinct(su,spat.unit)) %>%
+  ggplot() +
+  geom_density(aes(x = exp(.value), color = factor(sex))) +
+  facet_wrap(~spat.unit, scales = "free", ncol = 3) +
+  theme_minimal() 
+
+laa.samples %>%
+  gather_draws(g[su]) %>%
+  ungroup() %>%
+  left_join(data.biph %>% distinct(su,spat.unit)) %>%
+  ggplot() +
+  geom_density(aes(x = exp(.value), color = spat.unit)) +
+  theme_minimal() 
+
+laa.samples %>%
+  gather_draws(sig.l,sig.lj) %>%
+  ggplot() +
+  geom_density(aes(x = .value, color = .variable)) +
+  facet_wrap(~.variable, scales = "free", ncol = 3) +
+  theme_minimal() 
+
+laa.samples %>%
+  gather_draws(k.year[su,sex,year], sep = ",") %>%
+  ungroup() %>%
+  left_join(data.biph %>% distinct(su,spat.unit)) %>%
+  mutate(sex = ifelse(sex == 1, "m","f")) %>%
+  ggplot() +
+  geom_boxplot(aes(x = exp(.value), y = spat.unit, color = factor(sex)),
+               outliers = FALSE) +
+  theme_minimal() +
+  #xlim(0,)+
+  coord_cartesian(xlim = c(-0.5,4)) +
+  labs(y = "", x = "k")
+
+laa.samples %>%
+  gather_draws(linf[su,sex], sep = ",") %>%
+  ungroup() %>%
+  left_join(data.biph %>% distinct(su,spat.unit)) %>%
+  mutate(sex = ifelse(sex == 1, "m","f")) %>%
+  ggplot() +
+  geom_boxplot(aes(x = exp(.value), y = spat.unit, color = factor(sex)),
+               outliers = FALSE) +
+  theme_minimal() +
+  labs(y = "", x = "linf")
+
+```
+### k over time
+
+```{r}
+tmpK <- laa.samples %>%
+  gather_draws(k.year[su, sex, gyr], sep = ",") %>%
+  left_join(data.b %>% distinct(su, spat.unit)) %>%
+  mutate(sex = ifelse(sex == 1, "m","f")) 
+
+tmpK %>%
+  filter(gyr < 28) %>%
+  ggplot() +
+  geom_boxplot(aes(x = factor(gyr), y = exp(.value), color = factor(sex)),
+               outliers = FALSE) +
+  #scale_x_discrete(labels = hy.labs,breaks = function(x) x[as.numeric(x) %% 2 == 0] ) +
+  facet_wrap(~sex) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90,hjust = 1, size = rel(.75))) +
+  labs(x = "year", y = "k")
+
+tmpK %>%
+  filter(#sex == 2,
+         gyr < 28) %>%
+  ggplot() +
+  geom_boxplot(aes(x = factor(gyr), y = exp(.value), color = factor(sex)), alpha = 0.5,
+               outliers = FALSE) +
+  #scale_x_discrete(labels = hy.labs,breaks = function(x) x[as.numeric(x) %% 2 == 0] ) +
+  facet_wrap(~spat.unit, scales = "free") + 
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90,hjust = 1, size = rel(.75))) +
+  labs(x = "year", y = "k", title = "males")
+  
+tmpK %>%
+  filter(sex == "f",
+         gyr < 28) %>%
+  ggplot() +
+  geom_boxplot(aes(x = factor(gyr), y = exp(.value)),
+               outliers = FALSE) +
+  #scale_x_discrete(labels = hy.labs,breaks = function(x) x[as.numeric(x) %% 2 == 0] ) +
+  facet_wrap(~spat.unit, scales = "free") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90,hjust = 1, size = rel(.75))) +
+  labs(x = "year", y = "k", title = "females")
+
+
+```
+
+## Fecundity 
+
+### Plot fecundity data
+```{r}
+salfec %>%
+  ggplot() +
+  geom_point(aes(x = length_mm, y = n.eggs.tot), alpha = 0.3, shape = 4) +
+  geom_point(aes(x = length_mm, y = n.eggs.str), color = "deeppink", alpha = 0.2) +
+  facet_wrap(~spat.unit)
+
+salfec %>%
+  ggplot() +
+  geom_density(aes(x = n.eggs.tot), fill = "grey", alpha = 0.5) +
+  geom_density(aes(x = n.eggs.str), fill = "deeppink", alpha = 0.5) +
+  facet_wrap(~spat.unit)
+
+salfec %>%
+  mutate(n.eggs = if_else(is.na(n.eggs.tot), n.eggs.str, n.eggs.tot)) %>%
+  ggplot() +
+  geom_point(aes(x = log(length_mm)-log(mean(length_mm)), y = log(n.eggs)), alpha = 0.5) +
+  facet_wrap(~spat.unit)
+
+salfec %>%
+  ggplot() +
+  geom_density(aes(x = length_mm), fill = "deeppink", alpha = 0.5) +
+  facet_wrap(~spat.unit) +
+  xlim(200,NA) +
+  theme_minimal()
+```
+
+### Source models / Load samples
+```{r}
+readRDS("/Users/vitl0001/gitProjects/diasp-lht/data/fec_samples_1219.RData")$WAIC
+readRDS("/Users/vitl0001/gitProjects/diasp-lht/data/fec_samples_1217.RData")$WAIC
+fec.samples <- readRDS("/Users/vitl0001/gitProjects/diasp-lht/data/fec_samples_1219.RData")$samples
+
+fec.samples[which(min(effectiveSize(fec.samples)) < 2000)]
+
+# # Or source model code and mcmc (load libs and data)
+# source(file = paste0(home,"/R/model devel/2-2_model_salmon_fecundity_v3.R"))
+# t <- Sys.time()
+# Sys.time() - t # approx 12 hours with 12 000 NUTS mcmc samples
+
+```
+
+### Traces and ‘potential scale reduction factor’
+
+```{r}
+node.sub <- grep("^(a|b|r)", colnames(fec.samples[[1]]), value = TRUE)
+fec.samples[, node.sub[], drop = FALSE] %>%
+mcmc_trace()
+fec.samples[, node.sub[], drop = FALSE] %>%
+gelman.diag()
+```
+
+### Predicted / observed
+
+```{r}
+dff <- fec.samples %>%
+  spread_draws(mu[i]) %>%
+  median_qi() %>%
+  rename(pred.ne = mu,
+         ind.id = i) %>%
+  ungroup() %>%
+  left_join(data.fec %>% 
+              select(length_mm,n.eggs,spat.unit) %>% 
+              rename(obs.ne = n.eggs) %>%
+              mutate(ind.id = row_number()))
+
+dff %>%
+  ggplot() +
+  geom_abline(slope = 1) +
+  geom_point(aes(x = obs.ne, y = pred.ne, color = spat.unit),shape = 4,alpha = 0.5) +
+  theme_minimal() +
+  facet_wrap(~spat.unit)
+```
+
+### Fecundity variables
+
+```{r}
+fec.samples %>%
+  gather_draws(b[su], a[su]) %>%
+  ungroup() %>%
+  left_join(data.fec %>% distinct(su,spat.unit)) %>%
+  mutate(sdval = sd(.value)) %>%
+  ggplot() +
+  geom_density(aes(x = .value, color = spat.unit)) +
+  facet_wrap(~.variable, scales = "free", ncol = 3) +
+  theme_minimal() 
+  
+fec.samples %>%
+  gather_draws(mu.a,mu.b,sd.a,sd.b,r) %>%
+  ggplot() +
+  geom_density(aes(x = .value, color = .variable)) +
+  facet_wrap(~.variable, scales = "free", ncol = 3) +
+  theme_minimal() 
+
+meanf <- fec.samples %>%
+  gather_draws(a[su], b[su]) %>%
+  ungroup() %>%
+  summarise(meanf = mean(.value), .by = .variable)
+
+fec.samples %>%
+  gather_draws(b[su], a[su]) %>%
+  ungroup() %>%
+  left_join(data.fec %>% distinct(su,spat.unit)) %>%
+  ggplot() +
+  geom_boxplot(aes(x = .value, y = spat.unit, color = spat.unit),
+               outliers = FALSE, show.legend = FALSE) +
+  facet_wrap(~.variable, scales = "free_x") +
+  theme_minimal() +
+  geom_vline(data = meanf, aes(xintercept = meanf), color = "darkgrey", size = 0.5) +
+  theme(axis.text.x = element_text(angle = 90,hjust = 1, size = rel(.75))) +
+  labs(y = "", x = "LAS [mm]")
+```
+

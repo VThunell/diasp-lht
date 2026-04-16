@@ -1,0 +1,794 @@
+---
+title: "Salmon Schnute model v3"
+author: "Viktor Thunell" 
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+format: 
+  html:
+    code-fold: true
+    code-summary: "Show code"
+    page-layout: full
+    embed-resources: true
+    toc: true
+knitr: 
+  opts_chunk:
+    fig.align: center
+    out-width: 80%
+editor: source
+execute: 
+  echo: true
+  eval: true
+  cache: true
+---
+
+## Load libraries
+
+```{r libs}
+#| message: false
+#| warning: false
+#| cache: false
+
+# Load libraries, install if needed
+pkgs <- c("tidyverse", "tidylog", "devtools","viridis","nls.multstart", "broom", "patchwork", "coda", "boot", "tidybayes","bayesplot", "nimbleHMC", "here")
+
+# remotes::install_github("nimble-dev/nimble", ref = "devel", subdir = "packages/nimble")
+
+if(length(setdiff(pkgs,rownames(installed.packages()))) > 0){
+    install.packages(setdiff(pkgs, rownames(installed.packages())), dependencies = T)
+  }
+
+invisible(lapply(pkgs, library, character.only = T))
+
+options(ggplot2.continuous.colour = "viridis")
+theme_set(theme_light()) # check why global theme option not working when rendering
+# Set path
+color_scheme_set("viridis")
+home <- here::here()
+```
+
+## Read data
+
+```{r}
+#| message: false
+#| warning: false
+#| cache: false
+
+sallaa <- readRDS(file = paste0(home,"/data/data-for-2-2/salmon-laa_2025-05-02.RData")) %>%
+  #filter out non-aged individuals (~34000 individuals)
+  filter(!(is.na(age.sea) & is.na(age.sm))) #%>% 
+
+```
+
+For now I will use the "both" type only.
+
+```{r}
+# Create a new dataset 
+sallaa2 <- sallaa %>%
+  filter(age.type == "both")
+
+sallaa2 %>%
+  drop_na(sex) %>%
+  ggplot(aes(age.tot, length, color = sex)) +
+  geom_point() +
+  facet_wrap(~sex) +
+  scale_x_continuous(breaks = seq(0, 13, 1) )
+
+```
+
+# Hists of age and length
+
+```{r}
+
+# If dropping all inds where both sea and sm age is NA 
+sallaa2 %>% 
+  ggplot() +
+  geom_density(aes(x = age.tot), fill = "deeppink", alpha = 0.5) +
+  xlim(0, 13) +
+  
+sallaa2 %>% 
+  ggplot() + 
+  geom_density(aes(x = length), fill = "deeppink", alpha = 0.5)
+  
+sallaa2 %>% 
+  ggplot() +
+  geom_density(aes(x = length, fill = factor(age.tot)), alpha = 0.5) +
+  #geom_histogram(aes(x = length)) +
+  facet_wrap(~age.tot, scales = "free")
+```
+
+```{r}
+  # Shape of the Schnute
+  K = 0.5
+  A1 = 1
+  A2 = 10
+  L1 = 10
+  L2 = 1000
+  p = 0.5
+    
+  K = 4.465e-01
+  A1 = 2
+  A2 = 12
+  L1 = 6.387e+02
+  L2 = 1.326e+03
+  p = -4.861e+00
+  
+a <- seq(2,12, by = 0.1)
+  
+plot(a,(L1^p + (L2^p - L1^p) * 
+           ((1 - exp(-K*(a-A1))) / (1 - exp(-K*(A2-A1))) )
+         )^(1/p), type = "l", ylab = "length", xlab = "age") 
+  
+  
+```
+
+### 1a. L1, L2, p and K 
+
+Ailloud et al. 2017. L_a is assumed normally distributed with expected age given by eq. 2 and 3.
+
+```{r}
+
+schnu1a.code <- nimbleCode({
+  # likelihood
+  for(i in 1:nobs){
+    length[i] ~ dnorm(mu[i], sd = sigma)
+    
+    mu[i] <- ( klt[1]^klt[2] + (klt[3]^klt[2] - klt[1]^klt[2]) * ( (1-exp( -klt[4]*(age.tot[i]-A1))) / (1-exp(-klt[4]*(A2-A1))) ) )^(1/klt[2])
+    
+        }
+  
+  # Priors 
+  sigma ~ dunif(0, 200)
+  
+  # LKJ prior on correlation matrix, see NIMBLE manual p45.
+  Ustar[1:npars,1:npars] ~ dlkj_corr_cholesky(1.3, npars) # eta = 1.3 as in manual
+  U[1:npars,1:npars] <- uppertri_mult_diag(Ustar[1:npars, 1:npars], sig_klt[1:npars])
+  klt[1:npars] ~ dmnorm(mu_klt[1:npars], cholesky = U[1:npars, 1:npars], prec_param = 0)
+  
+  mu_klt[1] ~ dnorm(100, 0.1) 
+  mu_klt[2] ~ dnorm(.5, 0.1) 
+  mu_klt[3] ~ dnorm(1000, 0.1) 
+  mu_klt[4] ~ dnorm(-1, 0.1) 
+  
+  sig_klt[1] ~ dlnorm(0,1)
+  sig_klt[2] ~ dlnorm(0,1)
+  sig_klt[3] ~ dlnorm(0,1)
+  sig_klt[4] ~ dlnorm(0,1)
+  
+    # # Calculate Linf and t0
+  # Linf  <- ( (exp(klt[4]*A2)*klt[3]^klt[2] - (exp(klt[4]*A1)*klt[1]^klt[2])) / (exp(klt[4]*A2) - exp(klt[4]*A1)) )^(1/klt[2])
+  # t0 <- A1 + A2 - (1/klt[4])*log(Linf)
+
+})
+
+# Function creating the Cholesky of the covar. matrix (p45 Nimble manual)
+uppertri_mult_diag <- nimbleFunction(
+  run = function(mat = double(2), vec = double(1)) {
+    returnType(double(2))
+    p <- length(vec)
+    out <- matrix(nrow = p, ncol = p, init = FALSE)
+    for(k in 1:p)
+      out[ , k] <- mat[ , k] * vec[k]
+    return(out)
+   # turn off buildDerivs for the i index
+}, buildDerivs = list(run = list(ignore = c('k')))) 
+
+# initial values generating function (klt[1:4] = L1,p,L2,K)
+inits <- function(){
+  list(mu_klt = c(rnorm(1, 50, 0.1),
+                  rnorm(1, 0.5, 0.1),
+                  rnorm(1, 5000, 0.1),
+                  rnorm(-1, 1, 0.1)),
+       sig_klt = c(rlnorm(1, 0, 1),
+                   rlnorm(1, 0, 1),
+                   rlnorm(1, 0, 1),
+                   rlnorm(1, 0, 1)))}
+
+data <- sallaa2
+npars <- 4
+A1 <- min(data$age.tot)
+A2 <- max(data$age.tot)
+
+# build model
+schnu1a.model <- nimbleModel(schnu1a.code,
+                             constants = list(npars=npars,
+                                              A1 = A1,
+                                              A2 = A2,
+                                              nobs = nrow(data)),
+                             inits=inits(),
+                             data = data %>% select(age.tot,length),
+                             buildDerivs = TRUE)
+```
+
+```{r}
+# schnu1a.model$getDependencies(c("klt"))
+# schnu1a.model$initializeInfo()
+# schnu1a.model$simulate("U")
+# schnu1a.model$simulate("Ustar")
+# schnu1a.model$U
+# schnu1a.model$Ustar
+# schnu1a.model$sig_klt
+# schnu1a.model$mu_klt
+# schnu1a.model$simulate("klt")
+# schnu1a.model$klt
+# schnu1a.model$simulate("mu")
+# schnu1a.model$mu
+```
+
+#### Configure, Build & Compile model & HMC
+
+```{r}
+# configure hmc
+schnu1a.confhmc <- configureHMC(schnu1a.model, 
+                               monitors = c("klt", "Ustar", "Linf", "t0")) # including Linf and t0 her causes som annoying NaNs, sample in another go!
+                               #monitors = c("klt", "Ustar", "mu"))
+# build mcmc (use buidlHMC() when not using configureHMC())
+schnu1a.hmc <- buildMCMC(schnu1a.confhmc)
+
+# compile model
+schnu1a.c <- compileNimble(schnu1a.model)
+
+# compile mcmc  and specify the project model
+schnu1a.hmcc <- compileNimble(schnu1a.hmc)
+
+#### HMC Samples
+
+#```{r sample}
+#help(NUTS)
+
+schnu1a.samp <- runMCMC(schnu1a.hmcc, niter = 500, nburnin = 300, nchains = 2, samplesAsCodaMCMC = TRUE)
+```
+```{r}
+sam <- schnu1a.samp
+
+
+sam %>%
+  gather_draws(klt[par]) %>%
+  median_qi() %>%
+  pull(.value) %>%
+  expand_grid(age = seq(A1, A2, by = 0.1)) %>%
+  
+
+# data.frame(age = seq(0,13, by = 0.1)) %>%
+#   
+#   mutate(Linf = sam$klt[1,1],
+#          k = sam$klt[2,1],
+#          age = age,
+#          length = Linf*(1-exp(-k*age)),
+#          length.up = sam$klt[3,1]*(1-exp(-sam$klt[4,1]*age)),
+#          length.lo = sam$klt[1,1]*(1-exp(-sam$klt[2,1]*age))) %>%
+#   ggplot() +
+#   geom_line(aes(x = age, y = length)) +
+#   geom_ribbon(aes(x = age,y = length, ymin = length.lo, ymax = length.up), alpha = .2, fill = "red") +
+#   geom_point(data = sallaa2, aes(age.tot, length)) +
+#   scale_x_continuous(breaks = seq(0, 13, 1) )
+
+
+```
+
+#### Check/plot samples
+
+```{r}
+
+summary(sam)
+# length at A1 and A2 corresponds to mean in the data while K and p are off.
+sallaa %>%
+  filter(age.tot %in% c(A1,A2))%>%
+  summarise(mean = mean(length), .by = age.tot)
+
+
+# Autocorrelation plots
+sam %>%
+  autocorr.diag(lags = seq(0,1000,5)) %>%
+  as_tibble(rownames = "lag") %>%
+  pivot_longer(cols = contains("klt"), names_to = "node" , values_to = "corr") %>%
+  mutate(lag = as.numeric(str_extract(lag, "\\d+"))) %>%
+  ggplot() +
+  geom_bar(aes(x = lag, y = corr), stat = "identity") +
+  facet_wrap(~node) +
+  theme_light() +
+
+sam %>%
+  autocorr.diag(lags = seq(0,1000,5)) %>%
+  as_tibble(rownames = "lag") %>%
+  # drop the 0 valued Ustar variables (NaN corrs)
+  select_if(~!any(is.na(.))) %>%
+  pivot_longer(cols = c(!contains("klt"), -lag), names_to = "node" , values_to = "corr") %>%
+  mutate(#node = str_replace_all(node, c("\\[" = "", "\\]"="", "," = "_", " "="")),
+          lag = as.numeric(str_extract(lag, "\\d+"))) %>%
+  ggplot() +
+  geom_bar(aes(x = lag, y = corr), stat = "identity") +
+  facet_wrap(~node) +
+  theme_light() 
+
+# Trace plots
+# number of plots in each frame
+pn = 16
+# number of nodes
+n = ncol(as.matrix(sam$chain1))
+
+# loop trace through nodes
+for(i in seq(0, n, by = pn)){
+  m = if_else(i != pn*( n %/% pn), i+pn, i + n %% pn) 
+  print(mcmc_trace(sam, pars = vars(i:m)))
+}
+
+#gelman.diag(schnu1a.samp) #Error in chol.default(W) : the leading minor of order 1 is not positive
+effectiveSize(schnu1a.samp)
+
+# schnu1a.samp$samples %>%
+#   gather_draws(klt[spat.unit,par]) %>%
+#   #mutate(val = exp(.value)) %>%
+#   ggplot() + 
+#   geom_density(aes(x = .value, color = factor(par))) + # age parameter i
+#   facet_wrap(par~spat.unit, scales = "free", nrow = 3) +
+#   theme_light() 
+```
+
+<!-- ### 2a. Spatial with sex covariate -->
+
+<!-- ```{r} -->
+<!-- sallaa2 %>%  -->
+<!--   count(sex) # ~30% NA -->
+<!-- sallaa2 %>% -->
+<!--   count(sex,age.tot) -->
+
+<!-- sallaa2 %>%  -->
+<!--   ggplot() + -->
+<!--   geom_density(aes(x = length, fill = factor(sex)), alpha = 0.5) + -->
+<!--   #geom_histogram(aes(x = length)) + -->
+<!--   facet_wrap(~age.tot, scales = "free") -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- schnu2a.code <- nimbleCode({ -->
+
+<!--     # likelihood -->
+<!--   for(i in 1:nobs){ -->
+<!--     length[i] ~ dnorm(mu[i], sd = sigma) -->
+<!--     mu[i] <- ( L1^klt[su[i], 1] + (L2^klt[su[i],1] - L1^klt[su[i],1]) * ( (1-exp(-klt[su[i],2]*(age.tot[i]-A1))) / (1-exp(-klt[su[i],2]*(A2-A1))) ) )^(1/klt[su[i],1]) -->
+<!--     #b <- b1[su[i]]*sex[i]) -->
+<!--   } -->
+
+<!--   for(j in 1:nsu){ -->
+<!--    klt[j, 1:npars] ~ dmnorm(mu_klt[1:npars], cholesky = U[1:npars, 1:npars], prec_param = 0) -->
+
+<!--    #b1[j] ~ dnorm(mub1, sd = sb1) -->
+<!--    #b2[j] ~ dnorm(mub2, sd = sb2) -->
+<!--   } -->
+
+<!--   # for(k in 1:nobs){ -->
+<!--   #   sex[k]~dbern(psex[1]) #sex coded as 0 or 1 -->
+<!--   #   #sex[k]~dbern(psex[]) -->
+<!--   #   #psex[k] <- age[k] ... length[k] # add -->
+<!--   # } -->
+<!--   # psex[1] ~ dbeta(mean = 0.6, sd = 0.2)  #prop. males (prob to be 1) -->
+<!--   # psex[2] <- 1-psex[1] -->
+
+<!--   # Priors  -->
+<!--   sigma ~ dunif(0, 250) -->
+
+<!--   # LKJ prior on correlation matrix, see NIMBLE manual p45. -->
+<!--   Ustar[1:npars,1:npars] ~ dlkj_corr_cholesky(1.3, npars) # eta = 1.3 -->
+<!--   U[1:npars,1:npars] <- uppertri_mult_diag(Ustar[1:npars, 1:npars], sig_klt[1:npars]) -->
+
+<!--   mu_klt[1] ~ dunif(-1, 0)  -->
+<!--   mu_klt[2] ~ dunif(0, 1) -->
+
+<!--   sig_klt[1] ~ dlnorm(0,1) -->
+<!--   sig_klt[2] ~ dlnorm(0,1) -->
+
+<!--   mub1 ~ dnorm(0, 0.01) -->
+<!--   mub2 ~ dnorm(0, 0.01) -->
+<!--   sb1 ~ dlnorm(0, 1) -->
+<!--   sb2 ~ dlnorm(0, 1) -->
+
+<!-- }) -->
+
+<!-- # Function creating the Cholesky of the covar. matrix (p45 Nimble manual) -->
+<!-- uppertri_mult_diag <- nimbleFunction( -->
+<!--   run = function(mat = double(2), vec = double(1)) { -->
+<!--     returnType(double(2)) -->
+<!--     p <- length(vec) -->
+<!--     out <- matrix(nrow = p, ncol = p, init = FALSE) -->
+<!--     for(k in 1:p) -->
+<!--       out[ , k] <- mat[ , k] * vec[k] -->
+<!--     return(out) -->
+<!--    # turn off buildDerivs for the i index -->
+<!-- }, buildDerivs = list(run = list(ignore = c('k'))))  -->
+
+<!-- # data and constants -->
+<!-- data <- sallaa2 %>% -->
+<!--   mutate(su = as.integer(factor(spat.unit))) -->
+<!-- npars <- 2 -->
+<!-- nsu <- length(unique(data$su)) -->
+<!-- A1 <- min(data$age.tot) -->
+<!-- A2 <- max(data$age.tot) -->
+<!-- L1 <- data %>% filter(age.tot == A1) %>% pull(length) %>% mean()  -->
+<!-- L2 <- data %>% filter(age.tot == A2) %>% pull(length) %>% mean()  -->
+
+<!-- # initial values generating function -->
+<!-- inits <- function(){ -->
+<!--   list(mu_klt = c(rnorm(1,-0.5,0.2), -->
+<!--                   rnorm(1,0.5,0.25)), -->
+<!--        sig_klt = c(rlnorm(1,0.25,0.12), -->
+<!--                    rlnorm(1,0.25,0.12)))} -->
+
+<!-- # build model -->
+<!-- schnu2a.model <- nimbleModel(schnu1a.code, -->
+<!--                         constants = list(npars = npars, -->
+<!--                                          nsu = nsu, -->
+<!--                                          A1 = A1, -->
+<!--                                          A2 = A2, -->
+<!--                                          L1 = L1, -->
+<!--                                          L2 = L2, -->
+<!--                                          nobs = nrow(data), -->
+<!--                                          su = data$su), -->
+<!--                         inits=inits(), -->
+<!--                         data = data %>% select(age.tot,length,su), -->
+<!--                         buildDerivs = TRUE) -->
+
+<!-- ``` -->
+
+<!-- #### Configure, Build & Compile model & HMC -->
+
+<!-- ```{r} -->
+<!-- # configure hmc -->
+<!-- schnu2a.confhmc <- configureHMC(schnu2a.model,  -->
+<!--                                monitors = c("klt", "b1", "b2", "Ustar", "sex"), -->
+<!--                                enableWAIC = TRUE) -->
+
+<!-- # build mcmc (use buidlHMC() when not using configureHMC()) -->
+<!-- schnu2a.hmc <- buildMCMC(schnu2a.confhmc) -->
+
+<!-- # compile model -->
+<!-- schnu2a.c <- compileNimble(schnu2a.model) -->
+
+<!-- # the nodes that depend on sex -->
+<!-- schnu2a.c$getDependencies(c("sex")) %>% -->
+<!--   as_tibble() %>% -->
+<!--   mutate(nodes = str_extract(value, "\\w+")) %>% -->
+<!--   distinct(nodes) -->
+
+<!-- # compile mcmc  and specify the project model -->
+<!-- schnu2a.hmcc <- compileNimble(schnu2a.hmc)#, project = schnu2a.c) -->
+
+
+<!-- ``` -->
+
+<!-- #### HMC Samples -->
+
+<!-- ```{r} -->
+<!-- #help(NUTS) -->
+
+<!-- schnu2a.samp <- runMCMC(schnu2a.hmcc, niter = 500, nburnin = 300, nchains = 2, samplesAsCodaMCMC = TRUE, WAIC=TRUE) -->
+
+<!-- #schnu2a.samp <- readRDS(file = paste0(home,"/schnu2a.samp_20250517")) -->
+<!-- ``` -->
+
+<!-- #### Check/plot samples -->
+
+<!-- ```{r} -->
+<!-- summary(schnu2a.samp$samples) -->
+
+<!-- # length at age for the inds where sex is assigned by the model.  -->
+<!-- data %>% -->
+<!--   bind_cols(sex2 = schnu2a.c$sex) %>% -->
+<!--   filter(row_number() %in% which(is.na(data$sex))) %>% -->
+<!--   ggplot(aes(age.tot, length, color = factor(sex2))) + -->
+<!--   geom_point()  -->
+
+<!-- # deselect the sex nods to reduce sample object size -->
+<!-- acfnodes <- colnames(schnu2a.samp$samples$chain1)[-which( -->
+<!--   str_detect(colnames(schnu2a.samp$samples$chain1), "sex"))] -->
+<!-- schnu2a.samp$samples[,c(acfnodes)] -->
+
+<!-- # Autocorrelation plots -->
+<!-- schnu2a.samp$samples[,c(acfnodes)] %>% -->
+<!--   autocorr.diag(lags = seq(0,500,1)) %>% -->
+<!--   as_tibble(rownames = "lag") %>% -->
+<!--   pivot_longer(cols = contains("klt"), names_to = "node" , values_to = "corr") %>% -->
+<!--   mutate(lag = as.numeric(str_extract(lag, "\\d+"))) %>% -->
+<!--   ggplot() + -->
+<!--   geom_bar(aes(x = lag, y = corr), stat = "identity") + -->
+<!--   facet_wrap(~node) + -->
+<!--   theme_light() + -->
+
+<!-- schnu2a.samp$samples[,c(acfnodes)] %>% -->
+<!--   autocorr.diag(lags = seq(0,500,1)) %>% -->
+<!--   as_tibble(rownames = "lag") %>% -->
+<!--   # drop the 0 valued Ustar variables (NaN corrs) -->
+<!--   select_if(~!any(is.na(.))) %>% -->
+<!--   pivot_longer(cols = c(!contains("klt"), -lag), names_to = "node" , values_to = "corr") %>% -->
+<!--   mutate(lag = as.numeric(str_extract(lag, "\\d+"))) %>% -->
+<!--   ggplot() + -->
+<!--   geom_bar(aes(x = lag, y = corr), stat = "identity") + -->
+<!--   facet_wrap(~node) + -->
+<!--   theme_light()  -->
+
+<!-- mcmc_trace(schnu2a.samp$samples[,c(acfnodes)], pars = vars(1:16)) -->
+<!-- mcmc_trace(schnu2a.samp$samples[,c(acfnodes)], pars = vars(17:32)) -->
+<!-- mcmc_trace(schnu2a.samp$samples[,c(acfnodes)], pars = vars(33:48)) -->
+<!-- mcmc_trace(schnu2a.samp$samples[,c(acfnodes)], pars = vars(49:64)) -->
+
+<!-- #gelman.diag(schnu1a.samp$samples[1:2,]) -->
+<!-- effectiveSize(schnu2a.samp$samples) -->
+
+<!-- # schnu1a.samp$samples %>% -->
+<!-- #   gather_draws(klt[spat.unit,par]) %>% -->
+<!-- #   #mutate(val = exp(.value)) %>% -->
+<!-- #   ggplot() +  -->
+<!-- #   geom_density(aes(x = .value, color = factor(par))) + # age parameter  -->
+<!-- #   facet_wrap(par~spat.unit, scales = "free", nrow = 3) + -->
+<!-- #   theme_light()  -->
+<!-- ``` -->
+
+<!-- ### 3a. Temporal model -->
+
+<!-- Switching the spatial varaibel to a temporal variable. Including NA-sex (despite taking time to run). We get one schnu param per year and sex. -->
+
+<!-- ```{r} -->
+<!-- sallaa2 %>%  -->
+<!--   drop_na(sex) %>% -->
+<!--   summarise(l_mean = mean(length, na.rm = T), -->
+<!--             l_sd = sd(length, na.rm = T), -->
+<!--             .by = c(sex, year)) %>% -->
+<!--   ggplot() + -->
+<!--   geom_line(aes(year, l_mean, color = sex)) + -->
+<!--   geom_ribbon(aes(x = year,y = l_mean,ymin = l_mean-l_sd, ymax = l_mean+l_sd, fill = sex), alpha = 0.2)  -->
+
+<!-- sallaa2 %>%  -->
+<!--   count(year,sex) # ~30% NA -->
+
+<!-- sallaa2 %>%  -->
+<!--   ggplot() + -->
+<!--   geom_density(aes(x = length, fill = factor(sex)), alpha = 0.5) + -->
+<!--   #geom_histogram(aes(x = length)) + -->
+<!--   facet_wrap(~spat.unit, scales = "free") -->
+<!-- ``` -->
+
+<!-- ```{r} -->
+<!-- schnu3a.code <- nimbleCode({ -->
+<!--   # likelihood -->
+<!--   for(i in 1:nobs){ -->
+<!--     length[i] ~ dnorm(mu[i], sd = sigma) -->
+<!--     mu[i] <- (klt[year[i],1] + b1[year[i]]*sex[i]) * -->
+<!--       (1-exp(-(klt[year[i],2] + b2[year[i]]*sex[i]) * (age.tot[i]-klt[year[i],3]))) -->
+<!--   } -->
+
+<!--   for(k in 1:nobs){ -->
+<!--     sex[k]~dbern(psex[1]) #sex coded as 0 or 1 -->
+<!--     #sex[k]~dbern(psex[]) -->
+<!--     #psex[k] <- age[k] ... length[k] # add -->
+<!--   } -->
+<!--   psex[1] ~ dbeta(mean = 0.6, sd = 0.2)  #prop of males (prob to be 1) -->
+<!--   psex[2] <- 1-psex[1] -->
+
+<!--   # Priors  -->
+<!--   sigma ~ dunif(0, 250) -->
+
+<!--   # LKJ prior on correlation matrix, see NIMBLE manual p45. -->
+<!--   Ustar[1:npars,1:npars] ~ dlkj_corr_cholesky(1.3, npars) # eta = 1.3 -->
+<!--   U[1:npars,1:npars] <- uppertri_mult_diag(Ustar[1:npars, 1:npars], sig_klt[1:npars]) -->
+
+<!--   for(j in 1:nyear){ -->
+<!--    klt[j, 1:npars] ~ dmnorm(mu_klt[1:npars], cholesky = U[1:npars, 1:npars], prec_param = 0) -->
+
+<!--    b1[j] ~ dnorm(mub1, sd = sb1) -->
+<!--    b2[j] ~ dnorm(mub2, sd = sb2) -->
+<!--   } -->
+
+<!--   # mu and 2*sd from fishbase -->
+<!--   mu_klt[1] ~ dnorm(1378, sd = 2*139)  -->
+<!--   mu_klt[2] ~ dnorm(0.43, sd = 2*0.28) -->
+<!--   mu_klt[3] ~ dnorm(-1.21, sd = 1.40)  -->
+<!--   # mu and 2*sd from fishbase -->
+<!--   sig_klt[1] ~ dlnorm(log(139),1) -->
+<!--   sig_klt[2] ~ dlnorm(log(0.43),1) -->
+<!--   sig_klt[3] ~ dlnorm(log(1.40),1) -->
+
+<!--   mub1 ~ dnorm(0, 0.01) -->
+<!--   mub2 ~ dnorm(0, 0.01) -->
+<!--   sb1 ~ dlnorm(0, 1) -->
+<!--   sb2 ~ dlnorm(0, 1) -->
+
+<!-- }) -->
+
+<!-- # Function creating the Cholesky of the covar. matrix (p45 Nimble manual) -->
+<!-- uppertri_mult_diag <- nimbleFunction( -->
+<!--   run = function(mat = double(2), vec = double(1)) { -->
+<!--     returnType(double(2)) -->
+<!--     p <- length(vec) -->
+<!--     out <- matrix(nrow = p, ncol = p, init = FALSE) -->
+<!--     for(k in 1:p) -->
+<!--       out[ , k] <- mat[ , k] * vec[k] -->
+<!--     return(out) -->
+<!--    # turn off buildDerivs for the i index -->
+<!-- }, buildDerivs = list(run = list(ignore = c('k'))))  -->
+
+<!-- npars <- 3 -->
+
+<!-- # initial values generating function -->
+<!-- inits <- function(){ -->
+<!--   list(mu_klt = c(rnorm(1,1300,140), -->
+<!--                   rnorm(1,0.4,0.3), -->
+<!--                   rnorm(1,-1.2,1.4)), -->
+<!--        mub1 = rnorm(1,100,50), -->
+<!--        mub2 = rnorm(1,0.5,0.5), -->
+<!--        sig_klt = c(rlnorm(1,-0.60,0.30), -->
+<!--                    rlnorm(1,-3,0.05), -->
+<!--                    rlnorm(1,-1,0.05)))} -->
+
+<!-- data <- sallaa2 %>% -->
+<!--   filter(year > 1983) %>% -->
+<!--   mutate(sex = as.integer(if_else(sex == "f", 0, 1)), -->
+<!--          year = as.integer(factor(year))) %>% -->
+<!--   drop_na(sex) -->
+
+<!-- nyear <- length(unique(data$year)) -->
+
+<!-- # build model -->
+<!-- schnu3a.model <- nimbleModel(schnu3a.code, -->
+<!--                         constants = list(npars=npars,  -->
+<!--                                          nyear = nyear,  -->
+<!--                                          nobs = nrow(data),  -->
+<!--                                          year = data$year), -->
+<!--                         inits=inits(), -->
+<!--                         data = data -->
+<!--                         %>% select(age.tot,length,sex), -->
+<!--                         buildDerivs = TRUE) -->
+
+<!-- ``` -->
+
+<!-- #### Configure, Build & Compile model & HMC -->
+
+<!-- ```{r} -->
+<!-- # configure hmc -->
+<!-- schnu3a.confhmc <- configureHMC(schnu3a.model,  -->
+<!--                                monitors = c("klt", "b1", "b2", "Ustar"), -->
+<!--                                enableWAIC = TRUE) -->
+
+<!-- # build mcmc (use buidlHMC() when not using configureHMC()) -->
+<!-- schnu3a.hmc <- buildMCMC(schnu3a.confhmc) -->
+
+<!-- # compile model -->
+<!-- schnu3a.c <- compileNimble(schnu3a.model) -->
+
+<!-- # compile mcmc  and specify the project model -->
+<!-- schnu3a.hmcc <- compileNimble(schnu3a.hmc)#, project = schnu2a.c) -->
+
+<!-- #schnu2a.c$plotGraph() -->
+<!-- # schnu3a.c$getDependencies(c("sex")) %>% -->
+<!-- #   as_tibble() %>% -->
+<!-- #   mutate(nodes = str_sub(value, 1, 3)) %>% -->
+<!-- #   distinct(nodes) -->
+<!-- ``` -->
+
+<!-- #### HMC Samples -->
+
+<!-- ```{r} -->
+<!-- #help(NUTS) -->
+
+<!-- schnu3a.samp <- runMCMC(schnu3a.hmcc, niter = 5000, nburnin = 4000, nchains = 2, samplesAsCodaMCMC = TRUE, WAIC=TRUE) -->
+<!-- ``` -->
+
+<!-- #### Check/plot samples -->
+
+<!-- ```{r} -->
+<!-- summary(schnu3a.samp$samples) -->
+
+<!-- schnu3a.samp$samples %>% -->
+<!--   gather_draws(b1[year], sep = ",") %>% -->
+<!--   median_qi() %>% -->
+<!--   ggplot() + -->
+<!--   geom_point(aes(x = year, y = .value))#, color = factor(year))) + # age parameter i -->
+<!--   facet_wrap(year~., scales = "free")  -->
+
+<!-- # Autocorrelation plots -->
+<!-- schnu3a.samp$samples %>% -->
+<!--   autocorr.diag(lags = seq(0,1000,5)) %>% -->
+<!--   as_tibble(rownames = "lag") %>% -->
+<!--   pivot_longer(cols = contains("klt"), names_to = "node" , values_to = "corr") %>% -->
+<!--   mutate(lag = as.numeric(str_extract(lag, "\\d+"))) %>% -->
+<!--   ggplot() + -->
+<!--   geom_bar(aes(x = lag, y = corr), stat = "identity") + -->
+<!--   facet_wrap(~node) + -->
+<!--   theme_light() + -->
+
+<!-- schnu3a.samp$samples %>% -->
+<!--   autocorr.diag(lags = seq(0,1000,5)) %>% -->
+<!--   as_tibble(rownames = "lag") %>% -->
+<!--   # drop the 0 valued Ustar variables (NaN corrs) -->
+<!--   select_if(~!any(is.na(.))) %>% -->
+<!--   pivot_longer(cols = c(!contains("klt"), -lag), names_to = "node" , values_to = "corr") %>% -->
+<!--   mutate(#node = str_replace_all(node, c("\\[" = "", "\\]"="", "," = "_", " "="")), -->
+<!--           lag = as.numeric(str_extract(lag, "\\d+"))) %>% -->
+<!--   ggplot() + -->
+<!--   geom_bar(aes(x = lag, y = corr), stat = "identity") + -->
+<!--   facet_wrap(~node) + -->
+<!--   theme_light()  -->
+
+<!-- mcmc_trace(schnu3a.samp$samples, pars = vars(1:16)) -->
+<!-- mcmc_trace(schnu3a.samp$samples, pars = vars(17:32)) -->
+<!-- mcmc_trace(schnu3a.samp$samples, pars = vars(33:48)) -->
+<!-- mcmc_trace(schnu3a.samp$samples, pars = vars(49:64)) -->
+<!-- mcmc_trace(schnu3a.samp$samples, pars = vars(80:96)) -->
+<!-- mcmc_trace(schnu3a.samp$samples, pars = vars(100:116)) -->
+
+<!-- gelman.diag(schnu2a.samp$samples) -->
+<!-- effectiveSize(schnu3a.samp$samples) -->
+
+<!-- # schnu1a.samp$samples %>% -->
+<!-- #   gather_draws(klt[spat.unit,par]) %>% -->
+<!-- #   #mutate(val = exp(.value)) %>% -->
+<!-- #   ggplot() +  -->
+<!-- #   geom_density(aes(x = .value, color = factor(par))) + # age parameter  -->
+<!-- #   facet_wrap(par~spat.unit, scales = "free", nrow = 3) + -->
+<!-- #   theme_light()  -->
+<!-- ``` -->
+
+<!-- #### Plot pars -->
+
+<!-- The estimate of Linf is also very large. I guess this is also why b1 is very large. -->
+
+<!-- ```{r} -->
+<!-- schnu3a.samp$samples %>% -->
+<!--   spread_draws(klt[year, pars], sep = ",") %>% -->
+<!--   median_qi() %>% -->
+<!--   ggplot() +  -->
+<!--   geom_density(aes(x = klt, color = factor(pars))) + # age parameter i -->
+<!--   facet_wrap(~pars, scales = "free") + -->
+<!--   theme_light() + -->
+
+<!-- schnu3a.samp$samples %>% -->
+<!--   gather_draws(b1[year], b2[year], sep = ",") %>% -->
+<!--   median_qi() %>% -->
+<!--   ggplot() +  -->
+<!--   geom_density(aes(x = .value, color = factor(.variable))) + # age parameter i -->
+<!--   facet_wrap(~.variable, scales = "free") + -->
+<!--   theme_light() -->
+
+<!-- schnu3a.samp$samples %>% -->
+<!--   gather_draws(klt[year, pars], sep = ",") %>% -->
+<!--   mutate(pars = if_else(pars == 1, "Linf", -->
+<!--                         if_else(pars == 2,"k","t0"))) %>% -->
+<!--   median_qi() %>% -->
+<!--   ggplot() + -->
+<!--   geom_point(aes(x = year, y = .value, color = factor(pars))) + -->
+<!--   geom_line(aes(x = year, y = .value, color = factor(pars)), alpha = 0.3) + -->
+<!--   facet_wrap(~pars, scales = "free")  -->
+
+<!-- schnu3a.samp$samples %>% -->
+<!--   spread_draws(b1[year], klt[year, pars], sep = ",") %>% -->
+<!--   # unite(var, c(".variable","pars", ), na.rm = TRUE) %>% -->
+<!--   filter(pars %in% c(1),  -->
+<!--          year > 20) %>% -->
+<!--   mutate(m = klt + b1*1, -->
+<!--          f = klt + b1*0) %>% -->
+<!--   median_qi() %>% -->
+<!--   pivot_longer(cols = c("klt", "klt_m"), names_to = "par", values_to = "value") %>% -->
+<!--   ggplot() + -->
+<!--   geom_point(aes(x = year, y = value, color = factor(par))) + -->
+<!--   geom_line(aes(x = year, y = value, color = factor(par)), alpha = 0.3) + -->
+<!--   facet_wrap(~pars, scales = "free") + -->
+
+<!-- schnu3a.samp$samples %>% -->
+<!--   spread_draws(b2[year], klt[year, pars], sep = ",") %>% -->
+<!--   filter(pars %in% c(2), -->
+<!--          year > 20) %>% -->
+<!--   mutate(klt_m = klt + b2*1) %>% -->
+<!--   median_qi() %>% -->
+<!--   pivot_longer(cols = c("klt", "klt_m"), names_to = "par", values_to = "value") %>% -->
+<!--   ggplot() + -->
+<!--   geom_point(aes(x = year, y = value, color = factor(par))) + -->
+<!--   geom_line(aes(x = year, y = value, color = factor(par)), alpha = 0.3) + -->
+<!--   facet_wrap(~pars, scales = "free")  -->
+
+<!--   # left_join(expand_grid(sex = as.integer(c("1","2")), -->
+<!--   #                       age = seq(0,12, by = 0.1),  -->
+<!--   #                       year = as.integer(c(1:nyear))), by = c("year", "sex")) %>% -->
+<!--   pivot_longer(id_cols = c("sex", "su", "age"), names_from = par, values_from = c(.lower, .upper, kl)) %>% -->
+<!--   mutate(length = kl_1*(1-exp(-kl_2*(age-kl_3))),  -->
+<!--          length.up = .upper_1*(1-exp(-.upper_2*(age-.upper_3))),  -->
+<!--          length.low = .lower_1*(1-exp(-.lower_2*(age-.lower_3))),  -->
+<!--          .by = c("sex", "su")) %>% -->
+<!--   mutate(sex = if_else(sex == 1, "f", "m")) -->
+<!-- ``` -->

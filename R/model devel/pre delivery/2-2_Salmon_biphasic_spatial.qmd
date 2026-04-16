@@ -1,0 +1,271 @@
+---
+title: "Salmon Biphasic spatial model"
+author: "Viktor Thunell" 
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+format: 
+  html:
+    code-fold: true
+    code-summary: "Show code"
+    page-layout: full
+    embed-resources: true
+    toc: true
+knitr: 
+  opts_chunk:
+    fig.align: center
+    out-width: 80%
+editor: source
+execute: 
+  echo: true
+  eval: true
+  cache: true
+editor_options: 
+  chunk_output_type: inline
+---
+
+## Load libraries
+
+```{r libs}
+#| message: false
+#| warning: false
+#| cache: false
+
+# Load libraries, install if needed
+pkgs <- c("tidyverse", "tidylog", "devtools","viridis","nls.multstart", "broom", "patchwork", "coda", "boot", "tidybayes","bayesplot", "nimbleHMC", "here")
+
+# remotes::install_github("nimble-dev/nimble", ref = "devel", subdir = "packages/nimble")
+
+if(length(setdiff(pkgs,rownames(installed.packages()))) > 0){
+    install.packages(setdiff(pkgs, rownames(installed.packages())), dependencies = T)
+  }
+
+invisible(lapply(pkgs, library, character.only = T))
+
+options(ggplot2.continuous.colour = "viridis")
+theme_set(theme_light()) # check why global theme option not working when rendering
+# Set path
+color_scheme_set("viridis")
+home <- here::here()
+```
+
+## Read data
+
+```{r}
+#| message: false
+#| warning: false
+#| cache: false
+
+sallaa.all <- readRDS(file = paste0(home,"/data/data-for-2-2/salmon-laa_2025-06-19.RData")) %>%
+  rename(year = fi_year,
+         site = sai_location,
+         sea.age = sea_age_year,
+         juv.age = juvenile_age_year,
+         lat = fisa_y_4326,
+         lon = fisa_x_4326) %>%
+  #filter out non-aged individuals (~34000 individuals)
+  filter(!(is.na(sea.age) & is.na(juv.age)))
+
+sallaa <- sallaa.all
+```
+
+## Biphasic 3
+
+Spatial model for par and g and smolt mean (as gamma shape parameter)
+```{r build model}
+
+biph3.code <- nimbleCode({
+  
+  # likelihood
+  for(i in 1:nobs){
+    length_mm[i] ~ dnorm(l.mu[age.index[i], ind.id[i]], sd = sig.l) # age index is age + 1 to include data on age 0 individuals
+    }
+  
+  # estimate length at age
+  for(j in 1:nn){ # for each individual
+    l.mu[1,j] <- lb.mu + g[spat.unit[j]]
+
+    for(k in 2:(maxage+2)){ # add 2 to k to get max age + 1 and correct for age index
+    l.mu[k,j] <-  l.mu[k-1,j] + step(smo.age[j] - k)*g[spat.unit[j]] + 
+      (1-step(smo.age[j] - k))*((par[spat.unit[j],1] - l.mu[k-1,j])*(1 - exp(-exp(par[spat.unit[j],2])
+                                                                  #*(1 + (tot.age[j] %% 1))
+                                                                  )))
+    }
+    }
+  
+  # estimate smo.age. gamma w mu = ~2.5 makes rate = 2*shape and variance = 2/rate. With sd = 0.5, variance = 0.25,  rate=8 and shape 16.
+  for(l in 1:nn){
+    smo.age[l] ~ dgamma(shape = s.mu[spat.unit[l]], scale = 0.5^2/2.5)
+    }
+    
+  # Priors  
+  sig.l ~ dexp(1/500)
+  lb.mu ~ dnorm(10, sd = 5) # length at birth check literature 
+  
+  # LKJ prior on correlation matrix, see NIMBLE manual p45.
+  Ustar[1:npars,1:npars] ~ dlkj_corr_cholesky(1.3, npars) # eta = 1.3
+  U[1:npars,1:npars] <- uppertri_mult_diag(Ustar[1:npars, 1:npars], sig_par[1:npars])
+
+  for(i in 1:nsu){
+    par[i, 1:npars] ~ dmnorm(mu_par[1:npars], cholesky = U[1:npars, 1:npars], prec_param = 0)
+    s.mu[i] ~ dnorm(16, sd = 1) # shape of dgamma
+    g[i] ~ dnorm(0, sd = 1)
+   
+  }
+
+  mu_par[1] ~ dnorm(1378, sd = 2*139) # Linf from fb
+  mu_par[2] ~ dnorm(log(0.43), sd = 0.28) # K from fb
+  sig_par[1] ~ dlnorm(log(250),1)
+  sig_par[2] ~ dlnorm(log(0.50),1)
+  
+})
+
+# Function creating the Cholesky of the covar. matrix (p45 Nimble manual)
+uppertri_mult_diag <- nimbleFunction(
+  run = function(mat = double(2), vec = double(1)) {
+    returnType(double(2))
+    p <- length(vec)
+    out <- matrix(nrow = p, ncol = p, init = FALSE)
+    for(k in 1:p)
+      out[ , k] <- mat[ , k] * vec[k]
+    return(out)
+   # turn off buildDerivs for the i index
+}, buildDerivs = list(run = list(ignore = c('k'))))
+
+data <- sallaa %>%
+  filter(!is.na(juv.age)) %>%
+  mutate(smo.age = if_else(age.type == "both", juv.age, NA),
+         sea.age = if_else(is.na(sea.age), 0, sea.age),
+         tot.age = juv.age + sea.age + 0.1,
+         age.index = as.integer(tot.age + 1 - 0.1), # index for l.mu
+         spat.unit = as.integer(factor(spat.unit))
+         ) %>%
+  select(smo.age, tot.age, length_mm, age.index, spat.unit) %>%
+  slice_sample(n = 1500) %>%
+  mutate(ind.id = row_number()) # ind id
+
+npars <- 2
+
+# build model
+biph3.model <- nimbleModel(biph3.code,
+                            constants = list(npars = npars,
+                                            nobs = nrow(data),
+                                            nn = nrow(data), # change when having >1 sample per fish!!
+                                            nsu = length(unique(data$spat.unit)),
+                                            age.index = data$age.index,
+                                            ind.id = data$ind.id,
+                                            maxage = max(data$tot.age),
+                                            spat.unit = data$spat.unit),
+                            data = data %>% select(-ind.id,-age.index,-spat.unit))
+
+```
+
+#### Configure, Build & Compile model
+```{r}
+# configure hmc
+biph3.confmcmc <- configureMCMC(biph3.model,
+                                 monitors = c("g","par","lb.mu","l.mu", "s.mu", "smo.age"))
+
+# build mcmc (use buidlHMC() when not using configureHMC())
+biph3.mcmc <- buildMCMC(biph3.confmcmc)
+
+# compile model
+biph3.c <- compileNimble(biph3.model)
+
+# compile mcmc and specify the project model
+biph3.mcmcc <- compileNimble(biph3.mcmc)
+```
+
+
+```{r sample}
+# Sample
+# biph3.samp <- runMCMC(biph3.mcmcc, niter = 50000, nburnin = 40000, nchains = 2, thin = 2, samplesAsCodaMCMC = TRUE)
+# saveRDS(biph3.samp, "biph3.samp.rds")
+samp <- readRDS("biph3.samp.rds")
+
+```
+
+### Check and plot samples
+```{r check}
+#summary(samp)
+
+ps <- c("\\bs.mu\\b", "\\bg\\b", "\\bpar\\b", "\\blb.mu\\b")
+vars <- grep(paste(ps, collapse = "|"), varnames(samp), value = TRUE)
+mcmc_sub <- samp[, vars, drop = FALSE]
+
+pn = 16 # number of plots in each frame
+n = ncol(as.matrix(mcmc_sub$chain1)) # number of nodes
+# loop trace through nodes
+for(i in seq(0, n, by = pn)){
+  m = if_else(i != pn*( n %/% pn), i+pn, i + n %% pn)
+  print(mcmc_trace(mcmc_sub, pars = vars(i:m)))
+}
+
+# and some random l.mu:s
+ps <- c("l.mu")
+vars <- grep(paste(ps, collapse = "|"), varnames(samp), value = TRUE)[sample(10000, 16)]
+mcmc_sub <- samp[, vars, drop = FALSE]
+mcmc_trace(mcmc_sub)
+
+
+```
+
+```{r plot}
+
+# plot observed against predicted
+obs <- data %>%
+  select(length_mm,tot.age,ind.id) %>%
+  mutate(tot.age = round(tot.age),
+         observed = length_mm)
+
+predi <- samp %>%
+  gather_draws(l.mu[age,ind.id], sep = ",") %>%
+  median_qi() %>%
+  rename(predicted = .value) %>%
+  mutate(tot.age = age-1) %>%
+  filter(tot.age == obs$tot.age & ind.id == obs$ind.id)
+
+predi %>% 
+  left_join(obs, by =join_by(tot.age, ind.id)) %>%
+  ggplot(aes(x = observed, y = predicted)) +
+  geom_point(size = 2, alpha = 0.7) +
+  #geom_errorbar(aes(ymin = lower, ymax = upper), width = 0.2, alpha = 0.5) +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  theme_minimal()
+
+data %>%
+  filter(!is.na(smo.age)) %>%
+  select(smo.age) %>%
+  mutate(t= "obs") %>%
+  bind_rows( samp %>% gather_draws(smo.age[i]) %>% rename(smo.age = .value) %>% mutate(t="pred") ) %>%
+  ggplot() +
+  geom_density(aes(smo.age, fill = t))
+
+```
+
+## plot growth as if smoltif. age = 2 (Ill fix smot age estimate later)
+
+```{r}
+
+mqi <- samp %>%
+  gather_draws(par[su,param], g[su], lb.mu,  sep = ",") %>%
+  median_qi() 
+
+mqi %>% mutate(param = case_when(param == 1 ~ "Linf",
+                                 param == 2 ~ "K",
+                                 .variable == "g" ~ "g",
+                                 #.variable == "s.mu" ~ "s.mu",
+                                 .variable == "lb.mu" ~ "lb.mu",
+                                 .default = NA),
+               .value = case_when(param == "K" ~ exp(.value), .default = .value)) %>%
+  select(param, .value, su) %>%
+  pivot_wider(names_from = param, values_from = .value) %>%
+  mutate(lb.mu = max(lb.mu, na.rm = TRUE)) %>%
+  filter(!is.na(su)) %>%
+  expand_grid(age = seq(0, 12, 0.1)) %>%
+  mutate(length = if_else(age < 2, lb.mu + g*age, Linf*(1-exp(-K*age))), .by = su
+         ) %>%
+  ggplot() +
+  geom_line(aes(age, length, color = factor(su))) +
+  geom_point(data = data, aes(tot.age, length_mm, color = factor(spat.unit)), type = "dashed", alpha = 0.2) +
+  theme_light() 
+
+```
