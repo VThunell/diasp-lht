@@ -1,9 +1,12 @@
+node_modules/
 # History files
 .Rhistory
 .Rapp.history
 # Session Data files
 *.RData
 .RDataTmp
+*.html
+*.jpeg
 # User-specific files
 .Ruserdata
 # Example code in package build process
@@ -28,12 +31,9 @@ vignettes/*.pdf
 # Temporary files created by R markdown
 *.utf8.md
 *.knit.md
-
-.DS_Store
 *.DS_Store
 # Files created by R markdown
 *_files/
-
 # R Environment Variables
 .Renviron
 # pkgdown site
@@ -44,3 +44,4 @@ po/*~
 rsconnect/
 .DS_Store
 */.DS_Store
+/cphg_slides
