@@ -55,7 +55,7 @@ home <- here::here()
 #| warning: false
 #| cache: false
 
-#sallaa <- readRDS(file = paste0(home,"/data/data-for-2-2/salmon-laa_2026-03-31.RData")) %>%
+#sallaa <- readRDS(file = paste0(home,"/data/data-for-2-2/salmon-laa_2026-01-30.RData")) %>%
 sallaa <- readRDS(file = paste0(home,"/data/data-for-2-2/salmon-laa_2026-03-31.RData")) %>%
   drop_na(length_mm) %>%
   rename(year = fi_year,
@@ -69,26 +69,26 @@ sallaa <- readRDS(file = paste0(home,"/data/data-for-2-2/salmon-laa_2026-03-31.R
   filter(!(sea.age == 0 & juv.age == 0)) %>%
   #filter out non-aged individuals (~90000 individuals)
   filter(!(is.na(sea.age) & is.na(juv.age))) %>%
-  # removes smolt.age = 0:
+  # removes smolt.age = 0
   filter(!(age.type == "both" & juv.age == 0)) %>%
   mutate(hatch.year = year-tot.age) %>% # to filter data based o hatch year instead of year to predict growth pars before catch year
   filter(!is.na(juv.age), # removes age.type = "sea.only"
          !is.na(year),
-         #hatch.year > 1997
-         hatch.year > 2006
+         #hatch.year > 2000
+         #hatch.year > 2006
          ) 
 
 set.seed(1)
 data.biph_m <- sallaa %>%
-  filter(age.type == "both") %>%
-  #filter(!age.type == "juve.only") %>% 
-  slice_sample(n = 30000) 
+  filter(hatch.year > 2000,
+         age.type == "both",
+         #sea.age > 0
+         ) #%>%
+  #slice_sample(n = 50000)
 
 data.biph <- sallaa %>%
   filter(age.type == "juve.only") %>% 
   bind_rows(data.biph_m) %>%
-  # combine Irish units and see if that helps the model
-  mutate(spat.unit = if_else(spat.unit %in% c("Ireland-west","Ireland-south"), "Ireland",spat.unit)) %>%
   mutate(yday.may1 = if_else(is.na(date), 1, yday(date) - yday("2025-05-01")+1), 
          doy.dec = if_else(yday.may1 > 0, yday.may1, yday.may1+365)/365,
          tot.age.dec = if_else(yday.may1 > 0, tot.age+doy.dec, tot.age+doy.dec-1),
@@ -99,8 +99,9 @@ data.biph <- sallaa %>%
          hatch.year.f = as.numeric(factor(hatch.year, levels = sort(unique(hatch.year)), labels = seq_along(sort(unique(hatch.year))))),
          year.f = as.integer(factor(year)),
          sex = as.integer(factor(sex)),
-         su = as.integer(factor(spat.unit))) %>%
-  #filter(!(is.na(smo.age))) %>%
+         su = as.integer(factor(spat.unit)),
+         basin = if_else(str_detect(spat.unit, "AU"),"BS","NA"),
+         bs = as.integer(factor(basin))) %>%
   mutate(ind.id = row_number()) 
 ```
 
@@ -138,16 +139,16 @@ data.biph %>%
   geom_density(aes(x = juv.age, fill = factor(sex)),  alpha = 0.3) +
   facet_wrap(~spat.unit) +
   labs(x = "age at smoltification") 
-  xlim(-1, 5)
+  #xlim(-1, 5)
 
 # juvenile size at age
 data.biph %>%
   filter(age.type == "juve.only",
-         #spat.unit == "Brittany"
+         #spat.unit == "Upper-Normandy"
          ) %>%
   ggplot(aes(x = juv.age, y =length_mm)) +
   geom_point(alpha = 0.3) +
-  #geom_smooth(method = "gam", formula = y ~ s(x, k = 3)) +
+  geom_smooth(method = "gam", formula = y ~ s(x, k = 3)) +
   #geom_smooth(method = lm) +
   facet_wrap(~spat.unit)
   
@@ -163,10 +164,10 @@ data.biph %>%
   facet_wrap(~spat.unit)
 
 data.biph %>%
-  filter(age.type == "both") %>%
+  #filter(age.type == "both") %>%
   mutate(sex = ifelse(sex == 1, "m","f")) %>%
-  ggplot(aes(tot.age, length_mm, color = factor(sex))) +
-  geom_point(alpha = 0.3) +
+  ggplot(aes(tot.age, length_mm, color = factor(smo_age))) +
+  geom_point(alpha = 0.3, size = 0.5) +
   facet_wrap(~spat.unit) +
   scale_x_continuous(breaks = seq(0, 13, 1), limit = c(0,NA) ) +
   theme_minimal()
@@ -229,6 +230,8 @@ vbgf_fits %>%
 ### Source models / Load samples
 ```{r}
 laa.samplesWAIC <- readRDS("/Users/vitl0001/gitProjects/diasp-lht/data/biph1_0_samples_2026-03-18.RData")
+laa.samplesWAIC <- readRDS("/Users/vitl0001/gitProjects/diasp-lht/data/biph1_0_4_samples_2026-05-04.RData")
+
 # biph1_0.samples$WAIC # 312954.1 10/3
 # biph1_0.samples_test$WAIC # 312911.5 10/3
 #laa.samples$WAIC # 312954.1 10/3
@@ -238,7 +241,8 @@ laa.samplesWAIC$WAIC # 667375.3 14/4 , 676518.5 18/4
 laa.samples <- laa.samplesWAIC$samples %>%
   as_draws()
 
-laa.samples <- biph.samples$samples %>%
+
+laa.samples <- biph1_0_4.samples$samples %>%
   as_draws()
 # # Or source model code and mcmc (load libs and data)
 # t <- Sys.time()
@@ -254,7 +258,6 @@ laa.samples <- biph.samples$samples %>%
 #   geom_point() +
 #   geom_smooth(method = lm)
 ```
-# testing posterior package
 
 ### Traces, rhats and ees
 
@@ -263,12 +266,12 @@ node.sub <- subset_draws(as_draws(laa.samples), variable = "sig_l")
 node.sub %>% mcmc_trace()
 node.sub %>% summarise_draws(c("mean","median","sd","rhat","ess_bulk","ess_tail"))
 
-node.sub <- subset_draws(as_draws(laa.samples), variable = c("l_mean_m_bs", "k_mean_m_bs"))
-node.sub %>% mcmc_trace()
-node.sub %>% summarise_draws(c("mean","median","sd","rhat","ess_bulk","ess_tail"))
+# node.sub <- subset_draws(as_draws(laa.samples), variable = c("l_mean_m_bs", "k_mean_m_bs"))
+# node.sub %>% mcmc_trace()
+# node.sub %>% summarise_draws(c("mean","median","sd","rhat","ess_bulk","ess_tail"))
 
 # su 1, 14 and 8 are odd (Adour, upper Normandy and Brittany)
-data.biph %>% distinct(spat.unit,su)
+#data.biph %>% distinct(spat.unit,su)
 node.sub <- subset_draws(as_draws(laa.samples), variable = "par_f")
 node.sub %>% mcmc_trace()
 node.sub %>% summarise_draws(c("mean","median","sd","rhat","ess_bulk","ess_tail")) %>%
@@ -276,7 +279,7 @@ node.sub %>% summarise_draws(c("mean","median","sd","rhat","ess_bulk","ess_tail"
   mutate(mean_n = exp(mean))
 
 node.sub <- subset_draws(as_draws(laa.samples), variable = "par_m")
-node.sub[,sample(1:ncol(node.sub), 36)] %>% mcmc_trace()
+#node.sub[,sample(1:ncol(node.sub), 36)] %>% mcmc_trace()
 node.sub[] %>% mcmc_trace()
 node.sub %>% summarise_draws(c("mean","median","sd","rhat","ess_bulk","ess_tail")) %>% mutate(mean_n = exp(mean)) %>% arrange(-rhat)
 
@@ -286,34 +289,35 @@ node.sub %>% summarise_draws(c("mean","median","sd","rhat","ess_bulk","ess_tail"
 
 node.sub <- subset_draws(as_draws(laa.samples), variable = "par_sig_m")
 node.sub %>% mcmc_trace()
-node.sub %>% summarise_draws(c("mean","median","sd","rhat","ess_bulk","ess_tail")) %>% mutate(mean_n = exp(mean))
+node.sub %>% summarise_draws(c("mean","median","sd","rhat","ess_bulk","ess_tail")) %>% mutate(mean_n = exp(mean)) %>% arrange(-rhat)
 
 # su 14 and 8 are odd
-node.sub <- subset_draws(as_draws(laa.samples), variable = "lb_mu")
+node.sub <- subset_draws(as_draws(laa.samples), variable = "lh_mu")
 node.sub %>% mcmc_trace()
-node.sub %>% summarise_draws(c("mean","median","sd","rhat","ess_bulk","ess_tail")) %>% mutate(mean_n = exp(mean))
+node.sub %>% summarise_draws(c("mean","median","sd","rhat","ess_bulk","ess_tail")) %>% mutate(mean_n = exp(mean)) 
 
 node.sub <- subset_draws(as_draws(laa.samples), variable = "R")
 node.sub[,sample(1:ncol(node.sub), 36)] %>% mcmc_trace()
-node.sub %>% summarise_draws(c("mean","median","sd","rhat","ess_bulk","ess_tail")) %>% mutate(mean_n = exp(mean))
+node.sub %>% summarise_draws(c("mean","median","sd","rhat","ess_bulk","ess_tail")) %>% mutate(mean_n = exp(mean)) %>% arrange(-rhat)
 
-node.sub <- subset_draws(as_draws(laa.samples), variable = "par_f")
-node.sub2 <- subset_draws(as_draws(laa.samples), variable = "par_sig_f")
+node.sub <- subset_draws(as_draws(laa.samples), variable = "par_m")
+node.sub2 <- subset_draws(as_draws(laa.samples), variable = "par_sig_m")
 plot(node.sub2[,1],node.sub2[,1])
+
 ```
 # Density of pars
 ```{r}
-node.sub <- subset_draws(as_draws(laa.samples), variable = c("l_mean_m_bs", "k_mean_m_bs"))
-node.sub %>%
-  gather_draws(l_mean_m_bs[bs], k_mean_m_bs[bs]) %>%
-  left_join(data.biph %>% distinct(bs, basin)) %>%
-  ggplot() +
-  geom_density(aes(.value, color = factor(basin))) +
-  facet_wrap(~.variable, scales = "free_x")
+# node.sub <- subset_draws(as_draws(laa.samples), variable = c("l_mean_m_bs", "k_mean_m_bs"))
+# node.sub %>%
+#   gather_draws(l_mean_m_bs[bs], k_mean_m_bs[bs]) %>%
+#   left_join(data.biph %>% distinct(bs, basin)) %>%
+#   ggplot() +
+#   geom_density(aes(.value, color = factor(basin))) +
+#   facet_wrap(~.variable, scales = "free_x")
 
-node.sub <- subset_draws(as_draws(laa.samples), variable = c("lb_mu"))
+node.sub <- subset_draws(as_draws(laa.samples), variable = c("lh_mu"))
 node.sub %>%
-  gather_draws(lb_mu[su]) %>%
+  gather_draws(lh_mu[su]) %>%
   #median_qi()
   left_join(data.biph %>% distinct(su, spat.unit)) %>%
   ggplot() +
@@ -341,75 +345,26 @@ node.sub %>%
          ) %>%
   ggplot() +
   geom_density(aes(par_f, color = factor(spat.unit)))  
-  facet_wrap(~factor(su), scales = "free")
+  #facet_wrap(~factor(su), scales = "free")
 
 node.sub <- subset_draws(as_draws(laa.samples), variable = "par_m")
-a<-node.sub %>%
-  spread_draws(par_m[yr,supar], sep = ",") %>%
-  mutate(par_m = par_m,
-         su = if_else(supar < nsu, supar, supar - nsu),
-         par = if_else(supar < nsu, 1, 2)) %>%
-  filter(par == 1) %>%
-  #group_by(par, su) %>%
-  # median_qi() %>%
-  # left_join(data.biph %>% distinct(su, spat.unit))
-  # ggplot() +
-  geom_density(aes(par_m, color = factor(yr)), show.legend = FALSE) + 
-  facet_wrap(~factor(su), scales = "free", nrow = 2) 
-b <- node.sub %>%
-  spread_draws(par_m[yr,supar], sep = ",") %>%
-  mutate(par_m = par_m,
-         su = if_else(supar < ner, supar, supar - ner),
-         par = if_else(supar < ner, 1, 2)) %>%
-  mutate(par_m = par_m) %>%
-  filter(par == 2) %>%
-  ggplot() +
-  geom_density(aes(par_m, color = factor(yr))) + 
-  facet_wrap(~factor(su), scales = "free", nrow = 2)
-
-a / b
-
 # spatial model 
 node.sub %>%
   spread_draws(par_m[su,par], sep = ",") %>%
+  #median_qi() %>% 
+  #arrange(par) %>%
+  #mutate(par_m = exp(par_m)) %>%
   left_join(data.biph %>% distinct(su,spat.unit)) %>%
   filter(par == 1) %>%
   ggplot() +
-  geom_density(aes(exp(par_m), color = factor(spat.unit))) +
-  xlim(500, 5000) +
-  node.sub %>%
-  spread_draws(par_m[su,par], sep = ",") %>%
-  left_join(data.biph %>% distinct(su,spat.unit)) %>%
-  filter(par == 1) %>%
-  ggplot() +
-  geom_density(aes(exp(par_m), color = factor(spat.unit))) +
-  xlim(5000, 100000)
+  geom_density(aes(exp(par_m), color = factor(spat.unit))) 
 
 node.sub %>%
   spread_draws(par_m[su,par], sep = ",") %>%
   left_join(data.biph %>% distinct(su,spat.unit)) %>%
   filter(par == 2) %>%
   ggplot() +
-  geom_density(aes(exp(par_m), color = factor(spat.unit))) +
-  xlim(0, 1)
-  node.sub %>%
-  spread_draws(par_m[su,par], sep = ",") %>%
-  left_join(data.biph %>% distinct(su,spat.unit)) %>%
-  filter(par == 2) %>%
-  ggplot() +
-  geom_density(aes(exp(par_m), color = factor(spat.unit))) +
-  xlim(0.5, 10)
-  facet_wrap(~factor(par), scales = "free", nrow = 2) 
-node.sub %>%
-  spread_draws(par_m[yr,supar], sep = ",") %>%
-  mutate(par_m = par_m,
-         su = if_else(supar < ner, supar, supar - ner),
-         par = if_else(supar < ner, 1, 2)) %>%
-  mutate(par_m = par_m) %>%
-  filter(par == 2) %>%
-  ggplot() +
-  geom_density(aes(par_m, color = factor(yr))) + 
-  facet_wrap(~factor(su), scales = "free", nrow = 2)
+  geom_density(aes(exp(par_m), color = factor(spat.unit))) 
 
 
 node.sub <- subset_draws(as_draws(laa.samples), variable = c("smo_age"))
@@ -425,6 +380,7 @@ node.sub[,sample(1:50000,10000)] %>%
 ### Predicted / observed
 
 ```{r}
+
 keeps <- which(!is.na(laa.samples[1, ]))
 laa.samples_tmp <- laa.samples[, keeps]
 
@@ -458,30 +414,95 @@ dfl_old %>%
 ### Predicted curves
 
 ```{r}
-
 tmp <- laa.samples %>%
-  spread_draws(par_f[su,par], sep = ",") %>%
+  spread_draws(par_f[su,par], par_m[su,par], lh_mu[su], sep = ",") %>%
+  #spread_draws(par_f[su,par], sep = ",") %>%
   median_qi()
+  
+tmpb <- tmp %>%
+  select(su, par, lh_mu,par_f,par_m) %>%
+  pivot_wider(id_cols = c(su,lh_mu), names_from = par, values_from = c(par_f,par_m)) %>%
+  expand_grid(age = 0:10,smo_age = 1:5) %>% arrange(smo_age) %>%
+  mutate(length = NA,
+         j=age+1,
+         doy.dec = runif(1,0,1),
+         par_m_3 = exp(par_m_1)/exp(par_m_2),
+         par_f_3 = exp(par_f_1)/exp(par_f_2)) %>%
+  left_join(data.biph %>% distinct(su,spat.unit))
 
-tmp %>%
+#step(smo_age[i] - (gy-0.999) evaluates to 1 when smo_age > gy - .99
+# Smolt run is in april-may so ending that year of growth with smoltification. if smotl age == 2, growth year three should be in the marine habitat. So when growth year (j) <= smolt age, they grow in freshwater and when j > smolt age, marine habitat it is
+
+nage = length(unique(tmpb$age))
+nsa = length(unique(tmpb$smo_age))
+for(i in 1:nrow(tmpb)){
+  if(i %% nage == 1) {
+  tmpb$length[i] <- biph_step(
+    l_prev  = tmpb$lh_mu[i],
+    L_f     = tmpb$par_f_3[i],#exp(tmpb$par_f_1[i]),
+    L_m     = tmpb$par_m_3[i],   
+    k_f     = exp(tmpb$par_f_2[i]),
+    k_m     = exp(tmpb$par_m_2[i]),
+    doy_dec = 1,#tmpb$doy.dec[i],
+    j       = 1,
+    age     = tmpb$age[i],
+    smo_age = tmpb$smo_age[i])
+  } else {
+  tmpb$length[i] <- biph_step(
+    l_prev  = tmpb$length[i-1],
+    L_f     = tmpb$par_f_3[i],   #exp(tmpb$par_f_1[i]),
+    L_m     = tmpb$par_m_3[i],   
+    k_f     = exp(tmpb$par_f_2[i]),
+    k_m     = exp(tmpb$par_m_2[i]),
+    doy_dec = 1,#tmpb$doy.dec[i],
+    j       = tmpb$j[i],
+    age     = tmpb$age[i],
+    smo_age = tmpb$smo_age[i]) 
+  }
+  }
+
+data.biph %>% distinct(spat.unit)
+tmpb %>%
+  #filter(spat.unit == "Baltic-sea-AU1") %>%
+  ggplot() +
+  geom_line(aes(x=j, y=length, color = factor(smo_age)), alpha = 0.5) +
+  geom_point(data = data.biph, aes(tot.age, length_mm, color = factor(smo_age)), alpha = 0.3, size = 0.8) +
+  #geom_point(data = data.biph %>% filter(spat.unit == "Baltic-sea-AU1"), aes(tot.age, length_mm, color = factor(smo_age)), alpha = 0.3, size = 0.8) +
+  facet_wrap(~spat.unit, scales = "free") +
+  scale_x_continuous(breaks = seq(0, 10, 1) ) 
+
+tmpb %>%
+  filter(age < smo_age) %>%
+  ggplot() +
+  geom_line(aes(x=j, y=length, color = factor(smo_age)), alpha = 0.5) +
+  geom_point(data = data.biph %>% filter(age.type == "juve.only") , aes(tot.age, length_mm, color = factor(smo_age)), alpha = 0.3, size = 0.8) +
+  #geom_point(data = data.biph %>% filter(spat.unit == "Baltic-sea-AU1"), aes(tot.age, length_mm, color = factor(smo_age)), alpha = 0.3, size = 0.8) +
+  facet_wrap(~spat.unit, scales = "free") +
+  scale_x_continuous(breaks = seq(0, 10, 1) ) 
+
+```
+
+
+```{r}
+pf<- tmp %>%
   pivot_wider(id_cols = su, names_from = "par", values_from = "par_f") %>%
   left_join(data.biph %>% distinct(su,spat.unit)) %>%
   rename(linf = "1",
          k = "2") %>%
   mutate(linf = round(exp(linf),1),
          k = round(exp(k),6)) %>%
-  expand_grid(age = 0:4) %>%
-  mutate(length = linf*(1 - exp(-k*age))) %>%
+  expand_grid(gy = 0:4) %>%
+  mutate(length = linf*(1 - exp(-k*gy))) %>%
   ggplot() +
-  geom_line(aes(x= age, y  = length)) +
-  geom_point(data = data.biph %>% filter(age.type == "juve.only"), aes(tot.age-1, length_mm, color = factor(su)), alpha = 0.1) +
+  geom_line(aes(x=gy, y  = length)) +
+  geom_point(data = data.biph %>% filter(age.type == "juve.only"), aes(tot.age+1, length_mm, color = factor(su)), alpha = 0.1) +
   facet_wrap(~spat.unit)
 
 tmp_m <- laa.samples %>%
   spread_draws(par_m[su,par], sep = ",") %>%
   median_qi() 
   
-tmp_m %>% 
+pm <-tmp_m %>% 
   # mutate(su = if_else(par < 14, par, par-13),
   #        par = if_else(par < 14, 1, 2)) %>%
   pivot_wider(id_cols = su, names_from = "par", values_from = "par_m") %>%
@@ -491,15 +512,16 @@ tmp_m %>%
   mutate(linf = exp(linf),
          k = exp(k)) %>%
   #expand_grid(age = 2:8, cohort = seq(1,25, by=5)+1997) %>%
-  expand_grid(age = 2:8) %>%
+  expand_grid(gy = 2:8) %>%
   #mutate(length = , .by = cohort ) %>%
-  mutate(length = linf*(1 - exp(-k*age))) %>%
+  mutate(length = linf*(1 - exp(-k*gy))) %>%
   ggplot() +
-  geom_line(aes(x= age, y  = length)) +
-   geom_point(data = data.biph %>% filter(age.type == "both"), aes(tot.age-1, length_mm, color = factor(su)), alpha = 0.1) +
+  geom_line(aes(x=gy, y=length)) +
+  geom_point(data = data.biph %>% filter(age.type == "both"), aes(tot.age+1, length_mm, color = factor(su)), alpha = 0.1) +
   facet_wrap(~spat.unit)
     
          
+pf + pm
 
 ```
 

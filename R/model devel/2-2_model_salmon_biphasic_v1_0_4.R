@@ -1,5 +1,5 @@
-# Biphasic model 1.0:
-# revisiting the individual version 
+# Biphasic model 1.0.4:
+# this is 1_0_4 which worked but using new data and including smo_age data
 # Load libraries, install if needed
 pkgs <- c("tidyverse", "nimble")
 
@@ -10,7 +10,7 @@ if(length(setdiff(pkgs,rownames(installed.packages()))) > 0){
 invisible(lapply(pkgs, library, character.only = T))
 
 ## Biphasic code
-biph1_0.code <- nimbleCode({
+biph1_0_4.code <- nimbleCode({
   
   # likelihood
   for(i in 1:nind){
@@ -18,17 +18,19 @@ biph1_0.code <- nimbleCode({
     
     l_mu[1,i] <- lb_mu[su[i]] +
       (1-step(1-(age[i]+0.001)))*(exp(par_f[su[i],1]) - lb_mu[su[i]])*(1 - exp(-exp(par_f[su[i],2]))) +
-         step(1-(age[i]+0.001)) *(exp(par_f[su[i],1]) - lb_mu[su[i]])*(1 - exp(-exp(par_f[su[i],2])))*doy_dec[i]
+         step(1-(age[i]+0.001))*(exp(par_f[su[i],1]) - lb_mu[su[i]])*(1 - exp(-exp(par_f[su[i],2])))*doy_dec[i]
     
     for(a in 2:(growth_year[i]+1)){
       l_mu[a,i] <- l_mu[(a-1),i] +
         (1-step(a-(age[i]+0.001)))*(step(smo_age[i] - (a-0.999))*((exp(par_f[su[i],1]) - l_mu[(a-1),i])*(1 - exp(-exp(par_f[su[i],2])))) +
-                                      (1-step(smo_age[i] - (a-0.999)))*(((exp(par_m[su[i],1])) - l_mu[(a-1),i])*(1 - exp(-(exp(par_m[su[i],2])))))) +
-                                      
-           step(a-(age[i]+0.001))* (step(smo_age[i] - (a-0.999))*((exp(par_f[su[i],1]) - l_mu[(a-1),i])*(1 - exp(-exp(par_f[su[i],2]))))*doy_dec[i] +
-                                      (1-step(smo_age[i] - (a-0.999)))*(((exp(par_m[su[i],1])) - l_mu[(a-1),i])*(1 - exp(-(exp(par_m[su[i],2])))))*doy_dec[i]) 
+                                      (1-step(smo_age[i] - (a-0.999)))*(((exp(par_m[su[i],1])/exp(par_m[su[i],2])) - l_mu[(a-1),i])*(1 - exp(-(exp(par_m[su[i],2])))))) +
         
-        }
+        step(a-(age[i]+0.001))* (step(smo_age[i] - (a-0.999))*((exp(par_f[su[i],1]) - l_mu[(a-1),i])*(1 - exp(-exp(par_f[su[i],2]))))*doy_dec[i] +
+                                   (1-step(smo_age[i] - (a-0.999)))*(((exp(par_m[su[i],1])/exp(par_m[su[i],2])) - l_mu[(a-1),i])*(1 - exp(-(exp(par_m[su[i],2])))))*doy_dec[i]) 
+    
+    }
+    # calculate Linf
+    #Linf[su[i]] <- exp(par_m[su[i],1] - par_m[su[i],2])
   }
   
   # estimate smo_age
@@ -58,12 +60,14 @@ biph1_0.code <- nimbleCode({
   # priors for smolt age, lb.mu, g
   for(i in 1:nsu){
     smp[1:nK,i] ~ ddirch(alpha[1:nK])
-    lb_mu[i] ~ dlnorm(lb_mean, sdlog = lb_sd)
+    lb_mu[i] ~ dnorm(17, sd = 2) 
   }
   
-  mu_par_m[1] ~ dnorm(l_lmean_m, sd = 1)
+  mu_par_m[1] ~ dnorm(o_lmean_m, sd = 1)
+  # mu_par_m[1] ~ dnorm(l_lmean_m, sd = 1)
   mu_par_f[1] ~ dnorm(l_lmean_f, sd = 1)
-  sig_par_m[1] ~ dlnorm(log(l_lsd_m), sdlog = 0.1)  
+  sig_par_m[1] ~ dlnorm(log(l_lsd_f), sdlog = 0.1)  
+  #sig_par_m[1] ~ dlnorm(log(l_lsd_m), sdlog = 0.1)  
   sig_par_f[1] ~ dlnorm(log(l_lsd_f), sdlog = 0.1)  
   mu_par_m[2] ~ dnorm(mean = k_lmean_m, sd = 0.5)
   mu_par_f[2] ~ dnorm(mean = k_lmean_f, sd = 0.5)
@@ -72,15 +76,14 @@ biph1_0.code <- nimbleCode({
   
   # k & linf values (g and linf from fb)
   l_lsd_m <- sqrt(log(1 + (278^2) / (1378^2)))
-  l_sd_f <- sqrt(log(1 + (45^2) / (185^2)))
-  l_lmean_m <- log(1378) - 0.5 * l_lsd_m^2 # sd of the mean based on sd:s of LKJ
-  l_mean_f <- log(185) - 0.5 * l_sd_f^2 # sd of the mean based on sd:s of LKJ
+  l_lsd_f <- sqrt(log(1 + (30^2) / (150^2)))
+  l_lmean_m <- log(1378) - 0.5 * log(l_lsd_m)^2 # sd of the mean based on sd:s of LKJ
+  l_lmean_f <- log(150) - 0.5 * log(l_lsd_f)^2 # sd of the mean based on sd:s of LKJ
   k_lsd_m <- sqrt(log(1 + (0.28^2) / (0.43^2)))
   k_lsd_f <- sqrt(log(1 + (0.1^2) / (0.3^2)))
-  k_lmean_m <- log(0.43) - 0.5 * k_lsd_m^2
-  k_lmean_f <- log(0.3) - 0.5 * k_lsd_f^2 
-  lb_sd <- sqrt(log(1 + (3^2) / (17^2)))
-  lb_mean <- log(17) - 0.5 * (lb_sd^2)
+  k_lmean_m <- log(0.43) - 0.5 * log(k_lsd_m)^2
+  k_lmean_f <- log(0.3) - 0.5 * log(k_lsd_f)^2 
+  o_lmean_m <- l_lmean_m + k_lmean_m
   
   #Prior for correlation matrix (LKJ prior)
   phi[1]  <- eta + (npars - 2)/2
@@ -113,7 +116,9 @@ biph1_0.code <- nimbleCode({
 
 set.seed(1)
 data.biph_m <- sallaa %>%
-  filter(age.type == "both") %>%
+  drop_na(length_mm) %>%
+  filter(age.type == "both",
+         sea.age > 0) %>%
   slice_sample(n = 50000)
 
 data.biph <- sallaa %>%
@@ -132,10 +137,10 @@ data.biph <- sallaa %>%
          su = as.integer(factor(spat.unit)),
          basin = if_else(str_detect(spat.unit, "AU"),"BS","NA"),
          bs = as.integer(factor(basin))) %>%
-  #filter(!(is.na(smo.age))) %>%
+  #filter(!(is.na(smo_age))) %>%
   mutate(ind.id = row_number()) 
 
-nK = max(data.biph$smo.age %>% na.omit())
+nK = max(data.biph$smo_age %>% na.omit())
 nsu = length(unique(data.biph$spat.unit))
 
 consts = list(nind = nrow(data.biph), # n individuals change when >1 sample per ind.id
@@ -144,7 +149,7 @@ consts = list(nind = nrow(data.biph), # n individuals change when >1 sample per 
               alpha = c(1, 2, 3, 2, 1, 1)[1:nK],
               nsu = nsu,
               npars = 2,#*nsu, # n parameters in the LKJ dmnorm * number of spatial units 
-              age = data.biph$tot.age.dec, 
+              age = data.biph$tot.age.dec,# wy tot.age.dec and not tot.age??
               growth_year = data.biph$growth.year,
               doy_dec = data.biph$doy.dec,
               ind_id = data.biph$ind.id,
@@ -155,7 +160,7 @@ inits <- function(){
        lb_mu = runif(consts$nsu,13,19),
        sig_par_m = c(rlnorm(consts$npars,log(0.1),sdlog = 0.1)),
        sig_par_f = c(rlnorm(consts$npars,log(0.1),sdlog = 0.1)),
-       mu_par_m = c(rnorm(consts$npars,7,0.2)),
+       mu_par_m = c(rnorm(consts$npars,6,0.2)),
        mu_par_f = c(rnorm(1,4,0.2),
                    (rnorm(1,-1,0.2)))
       )
@@ -163,60 +168,57 @@ inits <- function(){
 
 # build model
 t <- Sys.time()
-biph1_0.model <- nimbleModel(biph1_0.code,
+biph1_0_4.model <- nimbleModel(biph1_0_4.code,
                              constants = consts,
                              inits = inits(),
-                             data = data.biph %>% select(length_mm,smo_age),
+                             data = data.biph %>% select(length_mm, smo_age),
                              buildDerivs = TRUE
                            )
 
-biph1_0.model$simulate()
-biph1_0.model$calculate()
-biph1_0.model$initializeInfo()
+biph1_0_4.model$simulate()
+biph1_0_4.model$calculate()
+biph1_0_4.model$initializeInfo()
+
 Sys.time() - t 
 # identify nodes to sample 
-dataNodes <- biph1_0.model$getNodeNames(dataOnly = TRUE)
-deterNodes <- biph1_0.model$getNodeNames(determOnly = TRUE)
-parentNodes <- biph1_0.model$getParents(dataNodes, stochOnly = TRUE) #all of these should be added to monitor below to recreate other model variables...
-stnodes <- biph1_0.model$getNodeNames(stochOnly = TRUE, includeData = FALSE)
-allvars <- biph1_0.model$getVarNames(nodes = stnodes)
+dataNodes <- biph1_0_4.model$getNodeNames(dataOnly = TRUE)
+deterNodes <- biph1_0_4.model$getNodeNames(determOnly = TRUE)
+parentNodes <- biph1_0_4.model$getParents(dataNodes, stochOnly = TRUE) #all of these should be added to monitor below to recreate other model variables...
+stnodes <- biph1_0_4.model$getNodeNames(stochOnly = TRUE, includeData = FALSE)
+allvars <- biph1_0_4.model$getVarNames(nodes = stnodes)
 mvars <- allvars[!(grepl("lifted",allvars))]  
 
 # calculate vars
 for(i in 1:length(mvars)){
-  print(paste0(mvars[i]," ",biph1_0.model$calculate(mvars[i]) ))
+  print(paste0(mvars[i]," ",biph1_0_4.model$calculate(mvars[i]) ))
 }
 
 # compile model
-biph1_0.c <- compileNimble(biph1_0.model)
+biph1_0_4.c <- compileNimble(biph1_0_4.model)
 
 # configure and build mcmc
-monits <- c(mvars, "l_mu")
+#monits <- c(mvars, "l_mu")
+monits <- c(mvars)
 
-biph1_0.confmcmc <- configureHMC(biph1_0.c, monitors = monits, enableWAIC = TRUE,#,"bL","bk"),
-                                useConjugacy = FALSE)
+biph1_0_4.confmcmc <- configureHMC(biph1_0_4.c, monitors = monits, enableWAIC = TRUE)
 
 t <- Sys.time()
-biph1_0.mcmc <- buildMCMC(biph1_0.confmcmc, project = biph1_0.model)
+biph1_0_4.mcmc <- buildMCMC(biph1_0_4.confmcmc, project = biph1_0_4.model)
 Sys.time() - t
 
 # compile mcmc
 t <- Sys.time()
-biph1_0.mcmcc <- compileNimble(biph1_0.mcmc, project = biph1_0.model)
+biph1_0_4.mcmcc <- compileNimble(biph1_0_4.mcmc, project = biph1_0_4.model)
 Sys.time() - t
 
 # MCMC Samples
 t <- Sys.time()
-biph1_0.samples <- runMCMC(biph1_0.mcmcc, niter = 7000, nburnin = 5500, nchains = 2, samplesAsCodaMCMC = TRUE, WAIC = TRUE)
+biph1_0_4.samples <- runMCMC(biph1_0_4.mcmcc, niter = 4000, nburnin = 2500, nchains = 1, samplesAsCodaMCMC = TRUE, WAIC = TRUE)
+#biph.samples <- runMCMC(biph1_0_4.mcmcc, niter = 100000, nburnin = 98500, nchains = 1, WAIC = TRUE)
 Sys.time() - t
 
-# biph1_0.samples$WAIC 311294.5
-biph1_0.samples$WAIC
-node.sub <- grep("par_m", colnames(biph1_0.samples$samples[[1]]), value = TRUE)
-biph1_0.samples$samples[, node.sub[], drop = FALSE] %>%
-  gelman.diag()
-  mcmc_trace()
-  effectiveSize()
+# biph1_0.samples$WAIC 311294
+biph.samples$WAIC #311301.6
 
 # Save samples
-saveRDS(biph1_0.samples, file = paste0(home,"/data/biph1_0_samples_",Sys.Date(),".RData"))
+saveRDS(biph.samples, file = paste0(home,"/data/biph1_0_4_samples_",Sys.Date(),".RData"))

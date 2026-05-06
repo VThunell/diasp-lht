@@ -1,5 +1,5 @@
 # Biphasic model 1.1.3:
-# spatiotemporal fixing prior values
+# spatiotemporal fixing Linf temporally
 
 # Load libraries, install if needed
 pkgs <- c("tidyverse", "nimble", "nimbleHMC")
@@ -69,17 +69,16 @@ biph.code <- nimbleCode({
   
   # first year of vb-par rw
   for(j in 1:nsu){
-    par_m[1,j] ~ dnorm(par_mu_m[j], sd = l_sd_m_bs[subs[j]])
-    par_m[1,(nsu+j)] ~ dnorm(par_mu_m[(nsu+j)], sd = k_sd_m_bs[subs[j]])
-    
     par_f[j,1:nfpars] ~ dmnorm(par_mu_f[1:nfpars], prec = tau_p_f[1:nfpars,1:nfpars])
   }
   
+  par_m[1,1:nmpars] ~ dmnorm(par_mu_f[1:nmpars], prec = tau_p_f[1:nmpars,1:nmpars])
+  
   # transition of vB pars from year i to i+1 (1 for each sex)
   for(i in 1:(nyear-1)){
-    par_m[(i+1),1:nmpars] ~ dmnorm(par_m[i,1:nmpars], prec = tau_p_m[1:nmpars,1:nmpars])
-    #par_m[(i+1),(nsu+1):nmpars] <- par_m[i,1:nmpars]# for no temp var in linf
-    #par_m[1:nsu,2,(i+1)] ~ dmnorm(par_m[1:nsu,2,i], prec = tau_p[1:nsu,1:nsu]) # for temp var in linf
+    # par_m[(i+1),1:nsu] ~ dmnorm(par_m[i,1:nmpars], prec = tau_p_m[1:nmpars,1:nmpars])
+    par_m[(i+1),1:nsu] <- par_m[1,1:nsu]
+    par_m[(i+1),(nsu+1):nmpars] ~ dmnorm(par_m[1:nsu,2,i], prec = tau_p[(nsu+1):nmpars,(nsu+1):nmpars]) # for temp var in linf
   }
   
   # estimate smo_age
@@ -317,7 +316,6 @@ t <- Sys.time()
 #biph.samples <- runMCMC(biph.mcmcc, niter = 1000, nburnin = 500, nchains = 1, samplesAsCodaMCMC = TRUE, WAIC = TRUE)
 biph.samples <- runMCMC(biph.mcmcc, niter = 6000, nburnin = 3000, thin = 2, nchains = 1, WAIC = TRUE)
 Sys.time() - t
-biph.samples$WAIC
 
 # sig_l"     "lb_mu"     "corZ"      "corY_f"    "corY"      "smp"       "par_sig_m" "par_mu_m"  "par_sig_f"
 # [10] "par_mu_f"  "smo_age"   "par_m"     "par_f"     "length_mm" "l_mu"     
